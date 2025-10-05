@@ -1,0 +1,58 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/bin/login_control
+SCRIPT_PATH=/etc/multilogin/login.sh
+
+start_service() {
+	local enabled
+	config_load multilogin
+	config_get enabled global enabled 0
+
+	if [ "$enabled" != "1" ]; then
+		echo "Multi-login is disabled in config"
+		return 0
+	fi
+
+	# 检查 mwan3 是否存在
+	if ! command -v mwan3 >/dev/null 2>&1; then
+		logger -t "multilogin" "Error: mwan3 not found, cannot start"
+		return 1
+	fi
+
+	# 确保登录脚本目录存在
+	mkdir -p /etc/multilogin
+
+	# 检查登录脚本是否存在
+	if [ ! -f "$SCRIPT_PATH" ]; then
+		logger -t "multilogin" "Warning: login.sh not found at $SCRIPT_PATH"
+	fi
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+	
+	logger -t "multilogin" "Multi-login service started"
+}
+
+stop_service() {
+	# 杀死所有 login_control 相关进程
+	killall -9 login_control 2>/dev/null
+	logger -t "multilogin" "Multi-login service stopped"
+}
+
+restart() {
+	stop
+	sleep 2
+	start
+}
+
+reload_service() {
+	restart
+}
