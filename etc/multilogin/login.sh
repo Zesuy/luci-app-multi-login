@@ -1,18 +1,16 @@
 #!/bin/sh
-#适用于cqu_虎溪校区的login_shell，A区等其他校区稍有修改，请注意自行修改！
-
 
 # 解析命令行参数
 INTERFACE=""
 WLAN_USER_ACCOUNT=""
 WLAN_USER_PASSWORD=""
 UA_TYPE="mobile"  # 默认使用mobile UA
-LOG_LEVEL=1 # 默认日志等级 INFO (0=DEBUG, 1=INFO, 2=ERROR)
+LOG_LEVEL=0 # 默认日志等级 INFO (0=DEBUG, 1=INFO, 2=ERROR)
 
 # 参数解析
 while [ $# -gt 0 ]; do
     case $1 in
-        --logical_interface)
+        --mwan3)
             INTERFACE="$2"
             shift 2
             ;;
@@ -61,18 +59,19 @@ log() {
 
 # 检查必需参数
 if [ -z "$INTERFACE" ] || [ -z "$WLAN_USER_ACCOUNT" ] || [ -z "$WLAN_USER_PASSWORD" ]; then
-    log 2 "错误: 缺少必要的参数 --interface, --account, 或 --password"
+    log 2 "错误: 缺少必要的参数 --mwan3, --account, 或 --password"
     exit 4
 fi
 
 # 通过逻辑接口名获取物理接口名
-PHYSICAL_INTERFACE=$(uci get network.$INTERFACE.device 2>/dev/null)
-if [ -z "$PHYSICAL_INTERFACE" ] || [ $? -ne 0 ]; then
+
+PHYSICAL_INTERFACE=$(/sbin/uci get network.$INTERFACE.device)
+if [ -z "$PHYSICAL_INTERFACE" ]; then
+    # 只有当变量真的为空时，才认为是失败
     log 2 "错误: 无法通过uci获取接口 '$INTERFACE' 的物理设备名称 (device)"
     exit 5
 fi
 log 0 "调试: 逻辑接口 '$INTERFACE' 对应的物理接口是 '$PHYSICAL_INTERFACE'"
-
 # 获取当前的 MAC 地址和 IP 地址
 WLAN_USER_MAC=$(cat /sys/class/net/$PHYSICAL_INTERFACE/address)
 WLAN_USER_IP=$(ifconfig $PHYSICAL_INTERFACE | grep 'inet ' | awk '{print $2}' | sed 's/addr://')
@@ -89,14 +88,14 @@ MOBILE_UA="Mozilla%2F5.0%20%28Linux%3B%20U%3B%20Android%2011%3B%20zh-cn%3B%20MI%
 # 检查当前认证状态的函数
 check_status() {
     local status_url="http://10.254.7.4/drcom/chkstatus?callback=dr1002&jsVersion=4.X&v=5505&lang=zh"
-    local response=$(curl --interface "$INTERFACE" -s "$status_url")
+    local response=$(mwan3 use $INTERFACE curl -s "$status_url")
     
     # 提取JSON中的result字段
     local result=$(echo "$response" | grep -o '"result":[0-9]' | cut -d':' -f2)
     
     if [ "$result" = "1" ]; then
-        log 1 "当前已认证，无需重复登录"
-        return 0
+        log 0 "当前已认证，无需重复登录"
+        return 1
     elif [ "$result" = "0" ]; then
         log 1 "当前未认证，继续登录流程..."
         return 1
@@ -116,7 +115,7 @@ do_login() {
     fi
     
     log 1 "尝试登录 ($UA_TYPE UA)，使用IP: $WLAN_USER_IP, MAC: $WLAN_USER_MAC"
-    local response=$(curl --interface "$INTERFACE" -s "$LOGIN_URL")
+    local response=$(mwan3 use $INTERFACE curl -s "$LOGIN_URL")
     
     local json_response=$(echo "$response" | grep -o '{.*}')
     

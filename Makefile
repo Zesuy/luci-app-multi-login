@@ -12,14 +12,14 @@ define Package/luci-app-multilogin
 	SECTION:=luci
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
-	TITLE:=Multi-WAN Login Manager
+	TITLE:=Multi-WAN Auto Login Manager
 	PKGARCH:=all
-	DEPENDS:=+mwan3
+	DEPENDS:=+mwan3 +curl
 endef
 
 define Package/luci-app-multilogin/description
-	LuCI interface for managing multiple WAN login instances.
-	Automatically login to campus network for multiple WAN interfaces.
+	LuCI support for managing multiple WAN campus network auto-login.
+	Supports both PC and mobile User-Agent types.
 endef
 
 define Build/Prepare
@@ -33,18 +33,35 @@ endef
 
 define Package/luci-app-multilogin/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/
 	$(INSTALL_DIR) $(1)/etc/config/
 	$(INSTALL_DIR) $(1)/etc/init.d/
 	$(INSTALL_DIR) $(1)/etc/multilogin/
-	$(INSTALL_DIR) $(1)/usr/bin/
 	
-	$(INSTALL_BIN) ./controller/multilogin.lua $(1)/usr/lib/lua/luci/controller/
-	$(INSTALL_DATA) ./model/cbi/multilogin/*.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DATA) ./controller/MultiLogin.lua $(1)/usr/lib/lua/luci/controller/
+	$(INSTALL_DATA) ./model/multilogin.lua $(1)/usr/lib/lua/luci/model/cbi/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/multilogin
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/multilogin
-	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/usr/bin/login_control
+	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/etc/multilogin/login_control.bash
 	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/login.sh
+endef
+
+define Package/luci-app-multilogin/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	/etc/init.d/multilogin enable
+	/etc/init.d/rpcd restart
+}
+exit 0
+endef
+
+define Package/luci-app-multilogin/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	/etc/init.d/multilogin stop
+	/etc/init.d/multilogin disable
+}
+exit 0
 endef
 
 $(eval $(call BuildPackage,luci-app-multilogin))

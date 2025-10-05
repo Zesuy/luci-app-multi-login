@@ -1,19 +1,17 @@
 
-# /etc/config/multilogin
-
 config settings 'global'
-	option enabled '1'
+	option enabled '0'
 	option log_level 'info'
 	option retry_interval '4'
 	option check_interval '5'
 	option max_retry_delay '16384'
 	option already_logged_delay '16'
 
-# 登录实例配置示例
-# config instance 'example'
-#	option enabled '1'
-#	option alias 'Example Login'
-#	option username 'your_account'
-#	option password 'your_password'
-#	option ua_type 'pc'
-#	option interface 'wan'
+# 示例配置实例（默认禁用）
+config instance 'example_pc'
+	option enabled '0'
+	option alias 'PC登录示例'
+	option username 'your_account'
+	option password 'your_password'
+	option ua_type 'pc'
+	option interface 'wan'
