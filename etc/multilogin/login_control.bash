@@ -12,13 +12,49 @@ INITIAL_RETRY_DELAY=4
 MAX_RETRY_DELAY=16384
 ALREADY_LOGGED_DELAY=16
 MAIN_LOOP_SLEEP=5
+LOG_LEVEL="info"
+
+# Map log level name to syslog severity number (lower is more severe)
+# debug=7, info=6, notice=5, warning=4, err=3
+level_to_num() {
+  case "$1" in
+    debug) echo 7 ;;
+    info) echo 6 ;;
+    notice) echo 5 ;;
+    warning|warn) echo 4 ;;
+    error|err) echo 3 ;;
+    *) echo 6 ;; # default info
+  esac
+}
+
+# Map to logger -p severity token
+map_to_logger_severity() {
+  case "$1" in
+    error) echo err ;;
+    warn) echo warning ;;
+    *) echo "$1" ;;
+  esac
+}
 
 # Enhanced logging function
 log() {
   local level=$1
   shift
   local message="$*"
-  logger -t "multi_login[$$]" -p "user.$level" "[$level] $message"
+
+  # Filter by configured log level
+  local msg_lvl_num=$(level_to_num "$level")
+  local conf_lvl_num=$(level_to_num "$LOG_LEVEL")
+  # Only log if message severity is >= configured severity (numerically <=)
+  if [ "$msg_lvl_num" -gt "$conf_lvl_num" ]; then
+    return 0
+  fi
+
+  local log_msg="[$(date '+%Y-%m-%d %H:%M:%S')] [$$] [$level] $message"
+  echo "$log_msg" >> /var/log/multilogin.log
+  # Also send to syslog for system-level monitoring
+  local sys_sev=$(map_to_logger_severity "$level")
+  logger -t "multi_login[$$]" -p "user.$sys_sev" "[$level] $message"
 }
 
 # Login function
@@ -95,6 +131,7 @@ main() {
   MAIN_LOOP_SLEEP=$(uci -q get multilogin.global.check_interval || echo $MAIN_LOOP_SLEEP)
   MAX_RETRY_DELAY=$(uci -q get multilogin.global.max_retry_delay || echo $MAX_RETRY_DELAY)
   ALREADY_LOGGED_DELAY=$(uci -q get multilogin.global.already_logged_delay || echo $ALREADY_LOGGED_DELAY)
+  LOG_LEVEL=$(uci -q get multilogin.global.log_level || echo $LOG_LEVEL)
 
   # Define arrays
   declare -a logical_interfaces
@@ -173,7 +210,7 @@ main() {
 
       # **FIX 2: Check for 'tracking is down'**
       if echo "$interface_line" | grep -q "tracking is down"; then
-        log "info" "Interface '$interface' tracking is down, skipping login attempt."
+        log "debug" "Interface '$interface' tracking is down, skipping login attempt."
         continue
       fi
 

@@ -14,7 +14,7 @@ define Package/luci-app-multilogin
 	SUBMENU:=3. Applications
 	TITLE:=Multi-WAN Auto Login Manager
 	PKGARCH:=all
-	DEPENDS:=+mwan3 +curl
+	DEPENDS:=+mwan3 +curl +bash +luci-compat +luci-app-mwan3
 endef
 
 define Package/luci-app-multilogin/description
@@ -32,18 +32,23 @@ define Build/Compile
 endef
 
 define Package/luci-app-multilogin/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/
-	$(INSTALL_DIR) $(1)/etc/config/
-	$(INSTALL_DIR) $(1)/etc/init.d/
-	$(INSTALL_DIR) $(1)/etc/multilogin/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/multilogin
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/multilogin
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_DIR) $(1)/etc/multilogin
 	
 	$(INSTALL_DATA) ./controller/MultiLogin.lua $(1)/usr/lib/lua/luci/controller/
-	$(INSTALL_DATA) ./model/multilogin.lua $(1)/usr/lib/lua/luci/model/cbi/
-	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/multilogin
-	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/multilogin
-	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/etc/multilogin/login_control.bash
-	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/login.sh
+	$(INSTALL_DATA) ./model/cbi/multilogin/settings.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DATA) ./model/cbi/multilogin/script.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DATA) ./model/cbi/multilogin/log.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DATA) ./view/multilogin/common_style.htm $(1)/usr/lib/lua/luci/view/multilogin/
+	$(INSTALL_DATA) ./view/multilogin/settings_style.htm $(1)/usr/lib/lua/luci/view/multilogin/
+	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
+	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/
+	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/etc/multilogin/
+	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/
 endef
 
 define Package/luci-app-multilogin/postinst

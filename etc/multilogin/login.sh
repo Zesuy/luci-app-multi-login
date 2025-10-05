@@ -46,13 +46,11 @@ log() {
             2) level_text="ERROR" ;;
         esac
         
-        local log_msg="[$INTERFACE] [$level_text] $msg"
-        # 使用-p user.info, user.err等来指定日志级别，方便在logread中过滤
-        case "$level_num" in
-            0) logger -t "multi_login" -p user.debug "$log_msg" ;;
-            1) logger -t "multi_login" -p user.info "$log_msg" ;;
-            2) logger -t "multi_login" -p user.err "$log_msg" ;;
-        esac
+        local log_msg="[$(date '+%Y-%m-%d %H:%M:%S')] [$INTERFACE] [$level_text] $msg"
+        echo "$log_msg" >> /var/log/multilogin.log
+        # Also send to syslog
+        level_text_lower=$(echo "$level_text" | tr '[:upper:]' '[:lower:]')
+        logger -t "multi_login_sh" -p user.${level_text_lower} "$log_msg"
         echo "$log_msg"
     fi
 }
