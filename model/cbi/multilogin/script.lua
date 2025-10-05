@@ -6,19 +6,13 @@ local sys = require "luci.sys"
 m = Map("multilogin", translate("登录脚本编辑"), 
     translate("在这里编辑 `login.sh` 脚本。这个脚本负责执行实际的登录操作,可以适当修改模板以适应不同校区。修改后请保存。服务将在保存后自动重启以应用更改。"))
 
--- 注入样式：放大编辑窗口并统一宽度
-do
-    local css = m:section(SimpleSection)
-    css.template = "multilogin/common_style"
-end
 
 s = m:section(TypedSection, "settings", "")
 s.anonymous = true
 s.addremove = false
 
-login_script = s:option(TextValue, "_login_script", translate("`login.sh` 脚本内容"))
-login_script.rows = 40
-login_script.cols = 100
+login_script = s:option(TextValue, "_login_script", "")
+login_script.rows = 30
 login_script.wrap = "off"
 login_script.template = "cbi/tvalue"
 login_script.monospace = true

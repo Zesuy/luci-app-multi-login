@@ -5,12 +5,6 @@ local fs = require "nixio.fs"
 m = Map("multilogin", translate("日志"), 
     translate("这里显示 `login_control.bash` 和 `login.sh` 的实时日志。"))
 
--- 注入样式：放大日志窗口并统一宽度
-do
-    local css = m:section(SimpleSection)
-    css.template = "multilogin/common_style"
-end
-
 s = m:section(TypedSection, "settings", "")
 s.anonymous = true
 s.addremove = false
@@ -34,10 +28,9 @@ function log_level.write(self, section, value)
 end
 
 -- 日志内容显示
-log = s:option(TextValue, "_log", translate("日志内容"))
+log = s:option(TextValue, "_log", "")
 log.readonly = true
-log.rows = 50
-log.cols = 100
+log.rows = 40
 log.wrap = "off"
 log.template = "cbi/tvalue"
 log.monospace = true

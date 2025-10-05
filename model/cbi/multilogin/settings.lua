@@ -5,12 +5,6 @@ local sys = require "luci.sys"
 m = Map("multilogin", translate("自动登录管理"), 
     translate("为校园网管理多个WAN口的校园网自动登录，支持PC和移动端UA类型。本插件会借助mwan3自动监控接口状态并在离线时尝试登录。 配置教程见 'https://github.com/Zesuy/luci-app-multi-login'"))
 
--- 注入样式：修正 Argon 主题下密码输入与切换按钮换行问题
-do
-    local css = m:section(SimpleSection)
-    css.template = "multilogin/settings_style"
-end
-
 -- 全局设置
 s = m:section(TypedSection, "settings", translate("全局设置"))
 s.anonymous = true

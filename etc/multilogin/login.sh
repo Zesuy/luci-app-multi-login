@@ -5,7 +5,7 @@ INTERFACE=""
 WLAN_USER_ACCOUNT=""
 WLAN_USER_PASSWORD=""
 UA_TYPE="mobile"  # 默认使用mobile UA
-LOG_LEVEL=0 # 默认日志等级 INFO (0=DEBUG, 1=INFO, 2=ERROR)
+LOG_LEVEL=1 # 默认日志等级 INFO (0=DEBUG, 1=INFO, 2=ERROR)
 
 # 参数解析
 while [ $# -gt 0 ]; do
@@ -93,7 +93,7 @@ check_status() {
     
     if [ "$result" = "1" ]; then
         log 0 "当前已认证，无需重复登录"
-        return 1
+        return 0
     elif [ "$result" = "0" ]; then
         log 1 "当前未认证，继续登录流程..."
         return 1
