@@ -1,7 +1,7 @@
 # LuCI App MultiLogin
 
 OpenWrt/LEDE 多拨自动登录 LuCI 应用
-
+## 注意readme暂未施工完成，教程请看 [autologin](https://github.com/Zesuy/OpenWrt-MWAN3-CQU-Auto-Login)
 ## 功能特性
 
 - 支持多个 WAN 口同时管理
