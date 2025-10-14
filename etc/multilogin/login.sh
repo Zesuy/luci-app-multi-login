@@ -71,7 +71,7 @@ if [ -z "$PHYSICAL_INTERFACE" ]; then
 fi
 log 0 "调试: 逻辑接口 '$INTERFACE' 对应的物理接口是 '$PHYSICAL_INTERFACE'"
 # 获取当前的 MAC 地址和 IP 地址
-WLAN_USER_MAC=$(cat /sys/class/net/$PHYSICAL_INTERFACE/address)
+WLAN_USER_MAC=$(cat /sys/class/net/$PHYSICAL_INTERFACE/address | tr -d ':')
 WLAN_USER_IP=$(ifconfig $PHYSICAL_INTERFACE | grep 'inet ' | awk '{print $2}' | sed 's/addr://')
 
 if [ -z "$WLAN_USER_IP" ]; then
@@ -87,6 +87,11 @@ MOBILE_UA="Mozilla%2F5.0%20%28Linux%3B%20U%3B%20Android%2011%3B%20zh-cn%3B%20MI%
 check_status() {
     local status_url="http://10.254.7.4/drcom/chkstatus?callback=dr1002&jsVersion=4.X&v=5505&lang=zh"
     local response=$(mwan3 use $INTERFACE curl -s "$status_url")
+
+    if echo "$response" | grep -q "WISPAccessGatewayParam"; then
+        log "当前未认证，继续登录流程..."
+        return 1
+    fi
     
     # 提取JSON中的result字段
     local result=$(echo "$response" | grep -o '"result":[0-9]' | cut -d':' -f2)
@@ -107,11 +112,10 @@ check_status() {
 do_login() {
     # 根据UA类型选择URL和参数
     if [ "$UA_TYPE" = "pc" ]; then
-        local LOGIN_URL="http://10.254.7.4:801/eportal/portal/login?callback=dr1004&login_method=1&user_account=%2C0%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=$WLAN_USER_MAC&wlan_ac_ip=&wlan_ac_name=&ua=$PC_UA&term_type=1&jsVersion=4.2&terminal_type=1&lang=zh-cn&v=9875&lang=zh"
+        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1004&login_method=1&user_account=%2C0%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=$WLAN_USER_MAC&wlan_ac_ip=&wlan_ac_name=&term_ua=$PC_UA&term_type=1&jsVersion=4.2&terminal_type=1&lang=zh-cn&v=2246&lang=zh"
     else
-        local LOGIN_URL="http://10.254.7.4:801/eportal/portal/login?callback=dr1005&login_method=1&user_account=%2C1%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=$WLAN_USER_MAC&wlan_ac_ip=&wlan_ac_name=&ua=$MOBILE_UA&term_type=2&jsVersion=4.2&terminal_type=2&lang=zh-cn&v=7090&lang=zh"
+        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1005&login_method=1&user_account=%2C1%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=$WLAN_USER_MAC&wlan_ac_ip=&wlan_ac_name=&term_ua=$MOBILE_UA&term_type=2&jsVersion=4.2&terminal_type=2&lang=zh-cn&v=2662&lang=zh"
     fi
-    
     log 1 "尝试登录 ($UA_TYPE UA)，使用IP: $WLAN_USER_IP, MAC: $WLAN_USER_MAC"
     local response=$(mwan3 use $INTERFACE curl -s "$LOGIN_URL")
     
