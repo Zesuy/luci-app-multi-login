@@ -13,13 +13,10 @@ s_template.addremove = false
 
 -- 显示当前使用的模板
 function detect_current_template()
-    local current_content = fs.readfile("/etc/multilogin/login.sh") or ""
-    local huxi_content = fs.readfile("/etc/multilogin/login_huxi.sh") or ""
-    local a_content = fs.readfile("/etc/multilogin/login_A.sh") or ""
-    
-    if current_content == huxi_content and huxi_content ~= "" then
+    -- 使用 cmp 命令比较文件，更可靠
+    if sys.call("cmp -s /etc/multilogin/login.sh /etc/multilogin/login_huxi.sh") == 0 then
         return translate("虎溪模板 (login_huxi.sh) - 创建者: Zesuy")
-    elseif current_content == a_content and a_content ~= "" then
+    elseif sys.call("cmp -s /etc/multilogin/login.sh /etc/multilogin/login_A.sh") == 0 then
         return translate("A区模板 (login_A.sh) - 创建者: L-1124")
     else
         return translate("自定义脚本")
@@ -45,14 +42,28 @@ apply_template.onclick = "return confirm('" .. translate("确认要替换当前�
 function apply_template.write(self, section)
     local template_type = template_select:formvalue(section)
     if template_type and template_type ~= "current" then
-        local source_file = "/etc/multilogin/login_" .. (template_type == "huxi" and "huxi" or "A") .. ".sh"
+        local source_file
+        if template_type == "huxi" then
+            source_file = "/etc/multilogin/login_huxi.sh"
+        elseif template_type == "login_a" then
+            source_file = "/etc/multilogin/login_A.sh"
+        else
+            m.message = translate("错误：未知的模板类型: ") .. template_type
+            return
+        end
+        
         local target_file = "/etc/multilogin/login.sh"
         
         if fs.access(source_file) then
             local content = fs.readfile(source_file)
             if content then
-                fs.writefile(target_file, content)
+                -- 参考 nettask.lua，使用临时文件方式写入
+                -- 先清空目标文件，然后写入新内容
+                fs.writefile("/tmp/login_temp.sh", content)
+                -- 使用 cp 命令强制覆盖
+                sys.call("cp -f /tmp/login_temp.sh " .. target_file)
                 sys.call("chmod +x " .. target_file)
+                fs.remove("/tmp/login_temp.sh")
                 -- 应用模板后重启服务
                 sys.call("/etc/init.d/multilogin restart >/dev/null 2>&1 &")
                 -- 显示成功消息并刷新页面
@@ -83,16 +94,26 @@ function login_script.cfgvalue()
 end
 
 function login_script.write(self, section, value)
+    -- 检查是否正在应用模板，如果是则跳过手动编辑的写入
+    -- 避免模板应用后被手动编辑框的旧内容覆盖
+    local template_type = template_select:formvalue(section)
+    if template_type and template_type ~= "current" then
+        -- 正在应用模板，跳过手动编辑框的写入
+        return
+    end
+    
     if value then
         value = value:gsub("\r\n?", "\n")
-        -- 比较文件内容，仅在有变动时写入
-        local current_content = fs.readfile("/etc/multilogin/login.sh") or ""
-        if value ~= current_content then
-            fs.writefile("/etc/multilogin/login.sh", value)
+        -- 参考 nettask.lua，使用临时文件方式比较和写入
+        fs.writefile("/tmp/login.sh", value)
+        if (sys.call("cmp -s /tmp/login.sh /etc/multilogin/login.sh") == 1) then
+            -- 文件内容不同，使用 cp 命令强制覆盖
+            sys.call("cp -f /tmp/login.sh /etc/multilogin/login.sh")
             sys.call("chmod +x /etc/multilogin/login.sh")
             -- 脚本修改后重启服务
             sys.call("/etc/init.d/multilogin restart >/dev/null 2>&1 &")
         end
+        fs.remove("/tmp/login.sh")
     end
 end
 

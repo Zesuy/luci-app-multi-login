@@ -1,5 +1,5 @@
 #!/bin/sh
-
+# A区模板 (创建者: L-1124)
 # 解析命令行参数
 INTERFACE=""
 WLAN_USER_ACCOUNT=""

@@ -62,8 +62,8 @@ endef
 define Package/luci-app-multilogin/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	/etc/init.d/multilogin stop
-	/etc/init.d/multilogin disable
+	/etc/init.d/multilogin stop 2>/dev/null || true
+	/etc/init.d/multilogin disable 2>/dev/null || true
 }
 exit 0
 endef
