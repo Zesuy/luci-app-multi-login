@@ -28,7 +28,7 @@ OpenWrt/LEDE 多wan自动登录 LuCI 应用
 
 ![主页1](./images/screenshot3.jpg)
 ![主页2](./images/screenshot2.jpeg)
-![login.sh更改](./images/screenshot1.jpeg)
+![模板引用](./images/scrips3.jpg)
 - 支持多个 WAN 口同时管理
 - 自动监控 mwan3 接口状态
 - 接口离线时自动尝试登录
@@ -36,6 +36,7 @@ OpenWrt/LEDE 多wan自动登录 LuCI 应用
 - 失败重试机制（指数退避）
 - Web 界面管理配置
 - 在线编辑 `login.sh` 脚本
+- 切换虎溪/a区登陆脚本
 - 服务状态监控和控制
 
 ## 原理
