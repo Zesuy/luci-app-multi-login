@@ -1,6 +1,7 @@
 # LuCI App MultiLogin
 
 OpenWrt/LEDE 多wan自动登录 LuCI 应用
+适用于openwrt 23.05以及mwan3 2.10+
 
 ## 目录
 
