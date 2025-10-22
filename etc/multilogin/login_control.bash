@@ -169,11 +169,11 @@ main() {
   done < <(uci show multilogin | awk -F'[.=]' '/=instance$/ {print $2}')
 
   if [ ${#logical_interfaces[@]} -eq 0 ]; then
-    log "notice" "No enabled login instances found, exiting."
-    exit 0
+    log "error" "No enabled login instances found. Daemon will continue running but perform no login operations."
+    log "info" "Starting multi-WAN auto-login daemon (PID: $$) with no active instances."
+  else
+    log "info" "Starting multi-WAN auto-login daemon (PID: $$), loaded ${#logical_interfaces[@]} instances."
   fi
-
-  log "info" "Starting multi-WAN auto-login daemon (PID: $$), loaded ${#logical_interfaces[@]} instances."
 
   declare -a last_login_time
   for i in "${!logical_interfaces[@]}"; do
@@ -182,6 +182,12 @@ main() {
 
   # Main loop
   while true; do
+    # If no instances are configured, just sleep and continue
+    if [ ${#logical_interfaces[@]} -eq 0 ]; then
+      sleep $MAIN_LOOP_SLEEP
+      continue
+    fi
+    
     local current_time=$(date +%s)
     local mwan3_status_output=$(mwan3 interfaces 2>/dev/null)
     

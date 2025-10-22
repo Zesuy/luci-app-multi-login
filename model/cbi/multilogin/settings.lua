@@ -14,53 +14,6 @@ enabled = s:option(Flag, "enabled", translate("启用自动登录"),
     translate("启用后，服务将在后台自动监控并登录配置的接口"))
 enabled.rmempty = false
 
-function enabled.validate(self, value)
-    if value ~= "1" then
-        return value
-    end
-
-    local has_enabled_instance = false
-    local form_data = {}
-    if type(self.map.formvaluetable) == "function" then
-        form_data = self.map:formvaluetable("cbid.multilogin") or {}
-    end
-
-    for section, options in pairs(form_data) do
-        if section ~= "settings" and type(options) == "table" then
-            local remove_mark = self.map:formvalue("cbi.rm.multilogin." .. section) or
-                self.map:formvalue("cbi.rmmultilogin." .. section)
-            local inst_enabled = options.enabled
-            if inst_enabled == "1" and not remove_mark then
-                has_enabled_instance = true
-                break
-            end
-        end
-    end
-
-    if not has_enabled_instance then
-        local cursor = luci.model.uci.cursor()
-        cursor:foreach("multilogin", "instance", function(s)
-            local sid = s[".name"]
-            local remove_mark = self.map:formvalue("cbi.rm.multilogin." .. sid) or
-                self.map:formvalue("cbi.rmmultilogin." .. sid)
-            local form_section = form_data[sid]
-            local inst_enabled = (form_section and form_section.enabled) or s.enabled
-            if inst_enabled == "1" and not remove_mark then
-                has_enabled_instance = true
-                return false
-            end
-        end)
-    end
-
-    if not has_enabled_instance then
-        local msg = translate("错误：当启用自动登录时，必须至少启用一个登录实例。")
-        self.map.errmessage = msg
-        return nil, msg
-    end
-
-    return value
-end
-
 retry_interval = s:option(Value, "retry_interval", translate("初始重试间隔(秒)"), 
     translate("登录失败后的初始重试延迟，失败后会指数增长"))
 retry_interval.datatype = "uinteger"
@@ -146,16 +99,8 @@ else
     
     local uci = luci.model.uci.cursor()
     local global_enabled = uci:get_first("multilogin", "settings", "enabled")
-    local has_enabled_instance = false
-    if global_enabled == "1" then
-        uci:foreach("multilogin", "instance", function(s)
-            if s.enabled == "1" then
-                has_enabled_instance = true
-            end
-        end)
-    end
 
-    if global_enabled == "1" and has_enabled_instance then
+    if global_enabled == "1" then
         start_btn = s2:option(Button, "_start", translate("启动服务"))
         start_btn.inputstyle = "apply"
         function start_btn.write()
@@ -175,20 +120,7 @@ m.on_commit = function(self)
         return true
     end
 
-    local has_enabled_instance = false
-    cursor:foreach("multilogin", "instance", function(s)
-        if s.enabled == "1" then
-            has_enabled_instance = true
-            return false
-        end
-    end)
-
-    if has_enabled_instance then
-        luci.sys.call("/etc/init.d/multilogin restart >/dev/null 2>&1 &")
-    else
-        luci.sys.call("/etc/init.d/multilogin stop >/dev/null 2>&1 &")
-    end
-
+    luci.sys.call("/etc/init.d/multilogin restart >/dev/null 2>&1 &")
     return true
 end
 
