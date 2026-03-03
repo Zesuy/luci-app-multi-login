@@ -1,5 +1,5 @@
 #!/bin/sh
-# 虎溪模板 (创建者: Zesuy) 
+# 虎溪模板 (创建者: Zesuy) - 适配 login.cqu.edu.cn 升级版
 # 解析命令行参数
 INTERFACE=""
 WLAN_USER_ACCOUNT=""

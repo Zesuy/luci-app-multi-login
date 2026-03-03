@@ -32,16 +32,16 @@ define Build/Compile
 endef
 
 define Package/luci-app-multilogin/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/multilogin
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/multilogin
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/etc/multilogin
 	
-	$(INSTALL_DATA) ./controller/MultiLogin.lua $(1)/usr/lib/lua/luci/controller/
-	$(INSTALL_DATA) ./model/cbi/multilogin/settings.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
-	$(INSTALL_DATA) ./model/cbi/multilogin/script.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
-	$(INSTALL_DATA) ./model/cbi/multilogin/log.lua $(1)/usr/lib/lua/luci/model/cbi/multilogin/
+	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-multi-login.json $(1)/usr/share/luci/menu.d/
+	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-multi-login.json $(1)/usr/share/rpcd/acl.d/
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/multilogin/* $(1)/www/luci-static/resources/view/multilogin/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/
 	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/etc/multilogin/

@@ -1,0 +1,42 @@
+{
+    "luci-app-multi-login": {
+        "description": "Grant access to multilogin configuration",
+        "read": {
+            "uci": [
+                "multilogin"
+            ],
+            "file": [
+                "/etc/multilogin/*",
+                "/var/log/multilogin.log"
+            ],
+            "ubus": {
+                "luci": [
+                    "getInitList"
+                ],
+                "service": [
+                    "list"
+                ]
+            }
+        },
+        "write": {
+            "uci": [
+                "multilogin"
+            ],
+            "file": [
+                "/etc/multilogin/login.sh",
+                "/etc/multilogin/login_A.sh",
+                "/etc/multilogin/login_huxi.sh"
+            ],
+            "ubus": {
+                "luci": [
+                    "setInitAction"
+                ],
+                "file": [
+                    "exec",
+                    "write",
+                    "read"
+                ]
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+{
+	"admin/services/multilogin": {
+		"title": "Auto-Login",
+		"icon": "services/multilogin.png",
+		"action": {
+			"type": "alias",
+			"path": "admin/services/multilogin/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-multi-login" ],
+			"uci": { "multilogin": true }
+		}
+	},
+	"admin/services/multilogin/settings": {
+		"title": "设置与实例",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "multilogin/settings"
+		}
+	},
+	"admin/services/multilogin/script": {
+		"title": "编辑脚本",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "multilogin/script"
+		}
+	},
+	"admin/services/multilogin/log": {
+		"title": "运行日志",
+		"order": 3,
+		"action": {
+			"type": "view",
+			"path": "multilogin/log"
+		}
+	}
+}
