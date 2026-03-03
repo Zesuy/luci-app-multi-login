@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
-PKG_VERSION:=1.1.0
-PKG_RELEASE:=1
+PKG_VERSION:=2.0.0
+PKG_RELEASE:=3
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -34,6 +34,7 @@ endef
 define Package/luci-app-multilogin/install
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/multilogin
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DIR) $(1)/etc/init.d
@@ -41,6 +42,7 @@ define Package/luci-app-multilogin/install
 	
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-multi-login.json $(1)/usr/share/luci/menu.d/
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-multi-login.json $(1)/usr/share/rpcd/acl.d/
+	$(INSTALL_BIN) ./root/usr/libexec/rpcd/multilogin $(1)/usr/libexec/rpcd/
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/multilogin/* $(1)/www/luci-static/resources/view/multilogin/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/
@@ -48,6 +50,7 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login_huxi.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login_A.sh $(1)/etc/multilogin/
+	$(INSTALL_BIN) ./etc/multilogin/quick_setup.sh $(1)/etc/multilogin/
 endef
 
 define Package/luci-app-multilogin/postinst

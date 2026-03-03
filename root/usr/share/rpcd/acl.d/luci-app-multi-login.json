@@ -3,7 +3,10 @@
         "description": "Grant access to multilogin configuration",
         "read": {
             "uci": [
-                "multilogin"
+                "multilogin",
+                "network",
+                "firewall",
+                "mwan3"
             ],
             "file": [
                 "/etc/multilogin/*",
@@ -15,12 +18,18 @@
                 ],
                 "service": [
                     "list"
+                ],
+                "multilogin": [
+                    "list_auto"
                 ]
             }
         },
         "write": {
             "uci": [
-                "multilogin"
+                "multilogin",
+                "network",
+                "firewall",
+                "mwan3"
             ],
             "file": [
                 "/etc/multilogin/login.sh",
@@ -32,9 +41,12 @@
                     "setInitAction"
                 ],
                 "file": [
-                    "exec",
                     "write",
                     "read"
+                ],
+                "multilogin": [
+                    "quick_setup",
+                    "remove_auto"
                 ]
             }
         }

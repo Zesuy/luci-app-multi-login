@@ -1,0 +1,212 @@
+#!/bin/sh
+
+# rpcd handler for multilogin plugin
+# Exposed as ubus object "multilogin" with methods:
+#   quick_setup    - Generate macvlan + network + firewall + mwan3 config
+#   list_auto      - List all auto_* managed sections
+#   remove_auto    - Remove all auto_* managed sections
+
+# Usage by rpcd: this script is called with 'list' or 'call <method>'
+
+case "$1" in
+    list)
+        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{}}\n'
+        ;;
+    call)
+        case "$2" in
+            quick_setup)
+                # Read JSON params from stdin: {"base_iface":"eth0","count":3}
+                json=$(cat)
+                BASE_IF=$(echo "$json" | jsonfilter -e '@.base_iface' 2>/dev/null)
+                COUNT=$(echo "$json" | jsonfilter -e '@.count' 2>/dev/null)
+
+                if [ -z "$BASE_IF" ] || [ -z "$COUNT" ] || [ "$COUNT" -lt 1 ] 2>/dev/null; then
+                    printf '{"error":"invalid parameters: base_iface and count are required"}\n'
+                    exit 1
+                fi
+
+                # --- Cleanup old auto_ entries ---
+                # Remove auto_ network interfaces and devices
+                for section in $(uci show network | grep -oE '^network\.[^.]+' | sort -u); do
+                    name="${section#network.}"
+                    case "$name" in auto_*) uci -q delete "network.$name" ;; esac
+                done
+
+                # Remove auto_ sections from mwan3
+                for section in $(uci show mwan3 | grep -oE '^mwan3\.[^.]+' | sort -u); do
+                    name="${section#mwan3.}"
+                    case "$name" in auto_*) uci -q delete "mwan3.$name" ;; esac
+                done
+
+                # Find wan zone and remove old auto_ entries from it
+                WAN_ZONE=""
+                for z in $(uci show firewall | grep "=zone" | grep -oE "firewall\.[^=]+=zone" | awk -F= '{print $1}' | awk -F. '{print $2}'); do
+                    if [ "$(uci -q get "firewall.$z.name")" = "wan" ]; then
+                        WAN_ZONE="$z"
+                        break
+                    fi
+                done
+
+                if [ -n "$WAN_ZONE" ]; then
+                    idx=0
+                    while true; do
+                        val=$(uci -q get "firewall.$WAN_ZONE.network" 2>/dev/null | awk -v i=$((idx+1)) 'NR==i')
+                        [ -z "$val" ] && break
+                        case "$val" in
+                            auto_*) uci -q del_list "firewall.$WAN_ZONE.network=$val" ;;
+                        esac
+                        idx=$((idx+1))
+                    done
+                    # More robust cleanup using the list form
+                    for net in $(uci -q get "firewall.$WAN_ZONE.network"); do
+                        case "$net" in auto_*) uci del_list "firewall.$WAN_ZONE.network=$net" ;; esac
+                    done
+                fi
+
+                # Cleanup auto_ members from balanced policy
+                for mem in $(uci -q get mwan3.balanced.use_member 2>/dev/null); do
+                    case "$mem" in auto_*) uci del_list "mwan3.balanced.use_member=$mem" ;; esac
+                done
+
+                # --- Create new configs ---
+                i=1
+                while [ "$i" -le "$COUNT" ]; do
+                    MACVLAN_DEV="auto_${BASE_IF}_${i}"
+                    LOGICAL_IF="auto_vwan_${i}"
+                    MWAN_MEMBER="auto_vwan_${i}_m1_w5"
+                    METRIC=$((10 + i))
+
+                    # Network: macvlan device
+                    uci set "network.$MACVLAN_DEV=device"
+                    uci set "network.$MACVLAN_DEV.type=macvlan"
+                    uci set "network.$MACVLAN_DEV.ifname=$BASE_IF"
+                    uci set "network.$MACVLAN_DEV.name=$MACVLAN_DEV"
+                    uci set "network.$MACVLAN_DEV.mode=private"
+                    uci set "network.$MACVLAN_DEV.ipv6=0"
+
+                    # Network: logical DHCP interface
+                    uci set "network.$LOGICAL_IF=interface"
+                    uci set "network.$LOGICAL_IF.proto=dhcp"
+                    uci set "network.$LOGICAL_IF.device=$MACVLAN_DEV"
+                    uci set "network.$LOGICAL_IF.metric=$METRIC"
+
+                    # Firewall: add to wan zone
+                    if [ -n "$WAN_ZONE" ]; then
+                        uci add_list "firewall.$WAN_ZONE.network=$LOGICAL_IF"
+                    fi
+
+                    # mwan3: tracking interface
+                    uci set "mwan3.$LOGICAL_IF=interface"
+                    uci set "mwan3.$LOGICAL_IF.enabled=1"
+                    uci set "mwan3.$LOGICAL_IF.family=ipv4"
+                    uci set "mwan3.$LOGICAL_IF.initial_state=offline"
+                    uci set "mwan3.$LOGICAL_IF.track_method=ping"
+                    uci set "mwan3.$LOGICAL_IF.reliability=1"
+                    uci set "mwan3.$LOGICAL_IF.count=1"
+                    uci set "mwan3.$LOGICAL_IF.size=56"
+                    uci set "mwan3.$LOGICAL_IF.max_ttl=60"
+                    uci set "mwan3.$LOGICAL_IF.timeout=2"
+                    uci set "mwan3.$LOGICAL_IF.interval=5"
+                    uci set "mwan3.$LOGICAL_IF.failure_interval=5"
+                    uci set "mwan3.$LOGICAL_IF.recovery_interval=5"
+                    uci set "mwan3.$LOGICAL_IF.down=2"
+                    uci set "mwan3.$LOGICAL_IF.up=3"
+                    uci add_list "mwan3.$LOGICAL_IF.track_ip=223.5.5.5"
+                    uci add_list "mwan3.$LOGICAL_IF.track_ip=114.114.114.114"
+
+                    # mwan3: member
+                    uci set "mwan3.$MWAN_MEMBER=member"
+                    uci set "mwan3.$MWAN_MEMBER.interface=$LOGICAL_IF"
+                    uci set "mwan3.$MWAN_MEMBER.metric=1"
+                    uci set "mwan3.$MWAN_MEMBER.weight=5"
+
+                    # mwan3: add member to balanced policy
+                    uci -q get mwan3.balanced >/dev/null 2>&1 || { uci set mwan3.balanced=policy; uci set mwan3.balanced.last_resort=unreachable; }
+                    uci add_list "mwan3.balanced.use_member=$MWAN_MEMBER"
+
+                    i=$((i+1))
+                done
+
+                # Commit all changes
+                uci commit network
+                uci commit firewall
+                uci commit mwan3
+
+                # Apply
+                /etc/init.d/network reload >/dev/null 2>&1 &
+                /etc/init.d/firewall reload >/dev/null 2>&1 &
+                /etc/init.d/mwan3 reload >/dev/null 2>&1 &
+
+                printf '{"result":"ok","count":%s,"base_iface":"%s"}\n' "$COUNT" "$BASE_IF"
+                ;;
+
+            list_auto)
+                # Return list of all auto_ managed sections
+                # Correct pattern: filter whole lines first, then extract section name
+                IFACES=$(uci show network | grep -E "^network\.auto_[^.=]+=interface$" | sed "s/network\.\([^.=]*\)=interface/\1/" | sort -u)
+                DEVICES=$(uci show network | grep -E "^network\.auto_[^.=]+=device$" | sed "s/network\.\([^.=]*\)=device/\1/" | sort -u)
+
+                # Get base_iface from first device if exists
+                FIRST_DEV=$(echo "$DEVICES" | head -n1)
+                BASE_IF=""
+                COUNT=0
+                if [ -n "$FIRST_DEV" ]; then
+                    BASE_IF=$(uci -q get "network.$FIRST_DEV.ifname" 2>/dev/null)
+                    COUNT=$(echo "$IFACES" | grep -c .)
+                fi
+
+                printf '{"base_iface":"%s","count":%s,"interfaces":[' "$BASE_IF" "$COUNT"
+                first=1
+                for iface in $IFACES; do
+                    dev=$(uci -q get "network.$iface.device" 2>/dev/null)
+                    metric=$(uci -q get "network.$iface.metric" 2>/dev/null)
+                    [ "$first" = "1" ] && first=0 || printf ','
+                    printf '{"name":"%s","device":"%s","metric":"%s"}' "$iface" "$dev" "$metric"
+                done
+                printf ']}\n'
+                ;;
+
+            remove_auto)
+                # Remove all auto_ configs
+                for section in $(uci show network | grep -oE 'network\.auto_[^.]+' | awk -F. '{print $2}' | sort -u); do
+                    uci -q delete "network.$section"
+                done
+                for section in $(uci show mwan3 2>/dev/null | grep -oE 'mwan3\.auto_[^.]+' | awk -F. '{print $2}' | sort -u); do
+                    uci -q delete "mwan3.$section"
+                done
+                # Clean WAN zone
+                for z in $(uci show firewall | grep "=zone" | grep -oE "firewall\.[^.=]+" | awk -F. '{print $2}'); do
+                    if [ "$(uci -q get "firewall.$z.name")" = "wan" ]; then
+                        for net in $(uci -q get "firewall.$z.network"); do
+                            case "$net" in auto_*) uci del_list "firewall.$z.network=$net" ;; esac
+                        done
+                        break
+                    fi
+                done
+                # Clean balanced members
+                for mem in $(uci -q get mwan3.balanced.use_member 2>/dev/null); do
+                    case "$mem" in auto_*) uci del_list "mwan3.balanced.use_member=$mem" ;; esac
+                done
+
+                uci commit network
+                uci commit firewall
+                uci commit mwan3
+
+                /etc/init.d/network reload >/dev/null 2>&1 &
+                /etc/init.d/firewall reload >/dev/null 2>&1 &
+                /etc/init.d/mwan3 reload >/dev/null 2>&1 &
+
+                printf '{"result":"ok"}\n'
+                ;;
+
+            *)
+                printf '{"error":"unknown method"}\n'
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        printf '{"error":"unsupported action"}\n'
+        exit 1
+        ;;
+esac

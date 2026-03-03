@@ -7,8 +7,12 @@
 			"path": "admin/services/multilogin/settings"
 		},
 		"depends": {
-			"acl": [ "luci-app-multi-login" ],
-			"uci": { "multilogin": true }
+			"acl": [
+				"luci-app-multi-login"
+			],
+			"uci": {
+				"multilogin": true
+			}
 		}
 	},
 	"admin/services/multilogin/settings": {
@@ -19,9 +23,17 @@
 			"path": "multilogin/settings"
 		}
 	},
+	"admin/services/multilogin/interfaces": {
+		"title": "虚拟接口管理",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "multilogin/interfaces"
+		}
+	},
 	"admin/services/multilogin/script": {
 		"title": "编辑脚本",
-		"order": 2,
+		"order": 3,
 		"action": {
 			"type": "view",
 			"path": "multilogin/script"
@@ -29,7 +41,7 @@
 	},
 	"admin/services/multilogin/log": {
 		"title": "运行日志",
-		"order": 3,
+		"order": 4,
 		"action": {
 			"type": "view",
 			"path": "multilogin/log"

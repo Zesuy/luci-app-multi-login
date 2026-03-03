@@ -30,10 +30,10 @@ return view.extend({
     render: function (res) {
         var serviceInfo = res[0] && res[0].multilogin;
         var pidFile = res[1];
-        
+
         var isRunning = false;
         var pid = null;
-        
+
         if (serviceInfo && serviceInfo.instances) {
             var instances = serviceInfo.instances;
             for (var key in instances) {
@@ -44,7 +44,7 @@ return view.extend({
                 }
             }
         }
-        
+
         if (!isRunning && pidFile) {
             pid = pidFile.trim();
             isRunning = pid !== '';
@@ -108,8 +108,8 @@ return view.extend({
 
         if (isRunning) {
             o = s2.option(form.DummyValue, '_status', _('服务状态'));
-            o.cfgvalue = function () { 
-                return pid ? _('运行中 (PID: %s)').format(pid) : _('运行中'); 
+            o.cfgvalue = function () {
+                return pid ? _('运行中 (PID: %s)').format(pid) : _('运行中');
             };
 
             o = s2.option(form.Button, '_stop', _('停止服务'));
