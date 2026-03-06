@@ -3,6 +3,7 @@
 'require rpc';
 'require dom';
 'require ui';
+'require network';
 
 var callQuickSetup = rpc.declare({
     object: 'multilogin',
@@ -25,13 +26,35 @@ var callRemoveAuto = rpc.declare({
 
 return view.extend({
     load: function () {
-        return L.resolveDefault(callListAuto(), {});
+        return Promise.all([
+            L.resolveDefault(callListAuto(), {}),
+            network.getDevices()
+        ]);
     },
 
-    render: function (data) {
+    render: function (results) {
+        var data = results[0] || {};
+        var devices = results[1] || [];
+        
         var base_iface = data.base_iface || '';
         var count = data.count || 0;
         var interfaces = data.interfaces || [];
+        
+        // 过滤可用的物理接口：排除 auto*, lan, loopback 等
+        var availableDevices = [];
+        devices.forEach(function(dev) {
+            var devName = dev.getName();
+            // 过滤条件：排除以 auto 开头的、lan、lo、br-lan 等
+            if (devName && 
+                !devName.match(/^auto/) && 
+                !devName.match(/^lan$/) &&
+                !devName.match(/^lo$/) &&
+                !devName.match(/^br-/) &&
+                dev.getType() !== 'bridge') {
+                availableDevices.push(devName);
+            }
+        });
+        availableDevices.sort();
 
         var status_rows = [];
         if (interfaces.length > 0) {
@@ -113,12 +136,19 @@ return view.extend({
                     E('div', { 'class': 'cbi-value' }, [
                         E('label', { 'class': 'cbi-value-title' }, _('物理接口')),
                         E('div', { 'class': 'cbi-value-field' }, [
-                            E('input', {
+                            E('select', {
                                 'id': 'quick_base_iface',
-                                'class': 'cbi-input-text',
-                                'value': base_iface || '',
-                                'placeholder': 'eth0'
-                            }),
+                                'class': 'cbi-input-select'
+                            }, [
+                                E('option', { 'value': '' }, _('-- 请选择 --'))
+                            ].concat(
+                                availableDevices.map(function(devName) {
+                                    return E('option', {
+                                        'value': devName,
+                                        'selected': devName === base_iface ? 'selected' : null
+                                    }, devName);
+                                })
+                            )),
                             E('div', { 'class': 'cbi-value-description' }, _('基于此物理接口创建 macvlan（如 eth0、eth1）'))
                         ])
                     ]),
@@ -126,15 +156,20 @@ return view.extend({
                     E('div', { 'class': 'cbi-value' }, [
                         E('label', { 'class': 'cbi-value-title' }, _('创建数量')),
                         E('div', { 'class': 'cbi-value-field' }, [
-                            E('input', {
+                            E('select', {
                                 'id': 'quick_count',
-                                'class': 'cbi-input-text',
-                                'type': 'number',
-                                'value': count || '',
-                                'min': '1',
-                                'max': '32',
-                                'placeholder': '2'
-                            }),
+                                'class': 'cbi-input-select'
+                            }, [
+                                E('option', { 'value': '' }, _('-- 请选择 --'))
+                            ].concat(
+                                Array.from({ length: 10 }, function(_, i) {
+                                    var num = i + 1;
+                                    return E('option', {
+                                        'value': num.toString(),
+                                        'selected': num === count ? 'selected' : null
+                                    }, num.toString());
+                                })
+                            )),
                             E('div', { 'class': 'cbi-value-description' }, _('生成 N 个 macvlan 虚拟接口及对应的 mwan3 成员（会覆盖旧配置）'))
                         ])
                     ]),
@@ -145,15 +180,15 @@ return view.extend({
                             E('button', {
                                 'class': 'cbi-button cbi-button-action',
                                 'click': function () {
-                                    var base_iface_val = document.getElementById('quick_base_iface').value.trim();
-                                    var count_val = parseInt(document.getElementById('quick_count').value.trim(), 10);
+                                    var base_iface_val = document.getElementById('quick_base_iface').value;
+                                    var count_val = parseInt(document.getElementById('quick_count').value, 10);
 
                                     if (!base_iface_val) {
-                                        ui.addNotification(null, E('p', _('请填写物理接口名称！')), 'error');
+                                        ui.addNotification(null, E('p', _('请选择物理接口！')), 'error');
                                         return;
                                     }
                                     if (!count_val || count_val < 1) {
-                                        ui.addNotification(null, E('p', _('请填写有效的数量（>= 1）！')), 'error');
+                                        ui.addNotification(null, E('p', _('请选择创建数量！')), 'error');
                                         return;
                                     }
 
