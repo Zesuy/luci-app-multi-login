@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
 PKG_VERSION:=2.0.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -67,6 +67,15 @@ define Package/luci-app-multilogin/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	/etc/init.d/multilogin stop 2>/dev/null || true
 	/etc/init.d/multilogin disable 2>/dev/null || true
+	/etc/init.d/rpcd restart 2>/dev/null || true
+}
+exit 0
+endef
+
+define Package/luci-app-multilogin/postrm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	rm -f /etc/rc.d/S??multilogin /etc/rc.d/K??multilogin 2>/dev/null || true
 }
 exit 0
 endef

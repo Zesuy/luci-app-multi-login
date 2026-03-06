@@ -144,29 +144,39 @@ main() {
   local index=0
   while read -r section_name; do
     [ -z "$section_name" ] && continue
-    
+
     local instance_enabled=$(uci -q get multilogin."$section_name".enabled)
     [ "$instance_enabled" != "1" ] && continue
-    
+
     local interface=$(uci -q get multilogin."$section_name".interface)
-    local username=$(uci -q get multilogin."$section_name".username)
-    local password=$(uci -q get multilogin."$section_name".password)
-    local ua_type=$(uci -q get multilogin."$section_name".ua_type || echo "pc")
-    
+    local ua_type=$(uci -q get multilogin."$section_name".ua_type)
+    [ -z "$ua_type" ] && ua_type="pc"
+
+    # 从 account 字段获取账户 section 名称，再查找真实凭据
+    local account_ref=$(uci -q get multilogin."$section_name".account)
+    local username=""
+    local password=""
+    if [ -n "$account_ref" ]; then
+      username=$(uci -q get multilogin."$account_ref".username)
+      password=$(uci -q get multilogin."$account_ref".password)
+    fi
+
     if [ -z "$interface" ] || [ -z "$username" ] || [ -z "$password" ]; then
       log "warning" "Instance '$section_name' config incomplete, skipped."
+      log "debug" "  interface='$interface' account_ref='$account_ref' username='$username' password=$([ -n "$password" ] && echo '***' || echo '')"
       continue
     fi
-    
+
     logical_interfaces[$index]="$interface"
     accounts[$index]="$username"
     passwords[$index]="$password"
     ua_types[$index]="$ua_type"
     delays[$index]=$INITIAL_RETRY_DELAY
-    
-    log "info" "Loaded instance #$index: Interface=$interface, Account=$username, UA=$ua_type"
+
+    log "info" "Loaded instance #$index: Interface=$interface, Account=$account_ref ($username), UA=$ua_type"
     index=$((index + 1))
-  done < <(uci show multilogin | awk -F'[.=]' '/=instance$/ {print $2}')
+  done < <(uci show multilogin | awk -F'[.=]' '$3 == "instance" {print $2}' | sort)
+
 
   if [ ${#logical_interfaces[@]} -eq 0 ]; then
     log "error" "No enabled login instances found. Daemon will continue running but perform no login operations."
