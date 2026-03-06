@@ -133,7 +133,7 @@ return view.extend({
                                 'value': count || '',
                                 'min': '1',
                                 'max': '32',
-                                'placeholder': '5'
+                                'placeholder': '2'
                             }),
                             E('div', { 'class': 'cbi-value-description' }, _('生成 N 个 macvlan 虚拟接口及对应的 mwan3 成员（会覆盖旧配置）'))
                         ])

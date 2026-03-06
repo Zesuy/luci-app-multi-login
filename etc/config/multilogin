@@ -7,11 +7,16 @@ config settings 'global'
 	option max_retry_delay '16384'
 	option already_logged_delay '16'
 
-# 示例配置实例（默认禁用）
+# 账户示例（在"账户管理"页面添加）
+config account 'account_1'
+	option alias '主账号'
+	option username 'your_account'
+	option password 'your_password'
+
+# 示例登录实例（默认禁用）
 config instance 'example_pc'
 	option enabled '0'
 	option alias 'PC登录示例'
-	option username 'your_account'
-	option password 'your_password'
+	option account 'account_1'
 	option ua_type 'pc'
 	option interface 'wan'
