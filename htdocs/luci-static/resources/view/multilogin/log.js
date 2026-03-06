@@ -12,7 +12,8 @@ return view.extend({
     render: function (logdata) {
         var m, s, o;
 
-        m = new form.Map('multilogin', _('系统日志'), _('本页面显示 /var/log/multilogin.log 的运行日志文件内容。这里包含服务启动、重试、错误等相关信息。'));
+        m = new form.Map('multilogin', _('运行日志'),
+            _('显示 /var/log/multilogin.log 的实时内容，记录服务启停、登录尝试与错误信息。注意：日志文件在路由器重启后会被清空。'));
 
         s = m.section(form.TypedSection, 'settings');
         s.anonymous = true;

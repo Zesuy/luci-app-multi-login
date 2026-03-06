@@ -72,8 +72,8 @@ return view.extend({
         });
 
         var m, s, o;
-        m = new form.Map('multilogin', _('自动登录管理'),
-            _('管理校园网多WAN口自动登录。支持 macvlan 虚拟接口一键创建、多账户管理，并借助 mwan3 自动监控接口状态，离线时自动重新登录。配置教程见 \'https://github.com/Zesuy/luci-app-multi-login\''));
+        m = new form.Map('multilogin', _('自动登录配置'),
+            _('配置各登录实例及全局参数。每个实例绑定一个逻辑接口与一个账户，由 mwan3 监控接口状态，离线时自动重新登录。请先在「账户管理」页添加账户，在「虚拟接口」页生成接口，再回此处创建实例。'));
 
         // ---- 全局设置 ----
         s = m.section(form.TypedSection, 'settings', _('全局设置'));
@@ -137,57 +137,6 @@ return view.extend({
         o.value('pc', 'PC');
         o.value('mobile', '移动端');
         o.default = 'pc';
-
-        // ---- 服务控制 ----
-        var s2 = m.section(form.TypedSection, 'settings', _('服务控制'));
-        s2.anonymous = true;
-        s2.addremove = false;
-
-        if (isRunning) {
-            o = s2.option(form.DummyValue, '_status', _('服务状态'));
-            o.cfgvalue = function () {
-                return pid ? _('运行中 (PID: %s)').format(pid) : _('运行中');
-            };
-
-            o = s2.option(form.Button, '_stop', _('停止服务'));
-            o.inputstyle = 'reset';
-            o.onclick = function () {
-                ui.showModal(_('正在停止...'), [E('div', { 'class': 'spinning' }, _('正在停止 multilogin 服务'))]);
-                callInitAction('multilogin', 'stop').then(function () {
-                    window.setTimeout(function () {
-                        L.ui.hideModal();
-                        location.reload();
-                    }, 2000);
-                });
-            };
-
-            o = s2.option(form.Button, '_restart', _('重启服务'));
-            o.inputstyle = 'apply';
-            o.onclick = function () {
-                ui.showModal(_('正在重启...'), [E('div', { 'class': 'spinning' }, _('正在重启 multilogin 服务'))]);
-                callInitAction('multilogin', 'restart').then(function () {
-                    window.setTimeout(function () {
-                        L.ui.hideModal();
-                        location.reload();
-                    }, 2000);
-                });
-            };
-        } else {
-            o = s2.option(form.DummyValue, '_status', _('服务状态'));
-            o.cfgvalue = function () { return _('未运行'); };
-
-            o = s2.option(form.Button, '_start', _('启动服务'));
-            o.inputstyle = 'apply';
-            o.onclick = function () {
-                ui.showModal(_('正在启动...'), [E('div', { 'class': 'spinning' }, _('正在启动 multilogin 服务'))]);
-                callInitAction('multilogin', 'start').then(function () {
-                    window.setTimeout(function () {
-                        L.ui.hideModal();
-                        location.reload();
-                    }, 2000);
-                });
-            };
-        }
 
         return m.render();
     },

@@ -12,7 +12,7 @@ return view.extend({
         var m, s, o;
 
         m = new form.Map('multilogin', _('账户管理'),
-            _('在此统一管理校园网账户信息。登录实例配置中可直接引用这里的账户，无需重复填写密码。'));
+            _('在此统一管理校园网账户信息，密码以掩码形式存储于本地 UCI。账户创建后，可在「自动登录配置」页面的登录实例中通过下拉框直接引用，无需重复填写。'));
 
         s = m.section(form.TableSection, 'account', _('账户列表'));
         s.anonymous = false;

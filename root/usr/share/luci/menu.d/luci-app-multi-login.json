@@ -1,6 +1,6 @@
 {
 	"admin/services/multilogin": {
-		"title": "Auto-Login",
+		"title": "多拨自动登录",
 		"icon": "services/multilogin.png",
 		"action": {
 			"type": "alias",
@@ -15,32 +15,32 @@
 			}
 		}
 	},
-	"admin/services/multilogin/settings": {
-		"title": "设置与实例",
-		"order": 1,
-		"action": {
-			"type": "view",
-			"path": "multilogin/settings"
-		}
-	},
 	"admin/services/multilogin/accounts": {
 		"title": "账户管理",
-		"order": 2,
+		"order": 1,
 		"action": {
 			"type": "view",
 			"path": "multilogin/accounts"
 		}
 	},
 	"admin/services/multilogin/interfaces": {
-		"title": "虚拟接口管理",
-		"order": 3,
+		"title": "虚拟接口",
+		"order": 2,
 		"action": {
 			"type": "view",
 			"path": "multilogin/interfaces"
 		}
 	},
+	"admin/services/multilogin/settings": {
+		"title": "自动登录配置",
+		"order": 3,
+		"action": {
+			"type": "view",
+			"path": "multilogin/settings"
+		}
+	},
 	"admin/services/multilogin/script": {
-		"title": "编辑脚本",
+		"title": "登录脚本",
 		"order": 4,
 		"action": {
 			"type": "view",

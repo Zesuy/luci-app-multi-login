@@ -23,8 +23,8 @@ return view.extend({
         var scriptContent = res[0] || '';
 
         var m, s, o;
-        m = new form.Map('multilogin', _('登录脚本编辑'),
-            _('在这里编辑 `login.sh` 脚本。这个脚本负责执行实际的登录操作，可以适当修改模板以适应不同校区。'));
+        m = new form.Map('multilogin', _('登录脚本'),
+            _('login.sh 是实际执行校园网认证请求的核心脚本。可切换预设模板或直接在下方编辑内容，保存后服务将自动重启以应用更改。'));
 
         s = m.section(form.TypedSection, 'settings', _('脚本模板切换'));
         s.anonymous = true;
@@ -67,13 +67,13 @@ return view.extend({
 
             ui.showModal(_('正在应用模板...'), [E('div', { 'class': 'spinning' }, _('正在应用所选模板并重启服务'))]);
 
-            fs.read(sourceFile).then(function(content) {
+            fs.read(sourceFile).then(function (content) {
                 return fs.write('/etc/multilogin/login.sh', content);
-            }).then(function() {
+            }).then(function () {
                 return L.resolveDefault(fs.exec('/bin/chmod', ['+x', '/etc/multilogin/login.sh']), null);
-            }).then(function() {
+            }).then(function () {
                 return callInitAction('multilogin', 'restart');
-            }).then(function() {
+            }).then(function () {
                 ui.addNotification(null, E('p', _('模板应用成功，服务已重启')), 'info');
                 window.setTimeout(function () {
                     ui.hideModal();

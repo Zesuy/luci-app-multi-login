@@ -106,7 +106,7 @@ return view.extend({
             E('div', { 'class': 'cbi-section' }, [
                 E('legend', _('快捷生成虚拟接口')),
                 E('div', { 'class': 'cbi-section-descr' },
-                    _('指定物理接口和数量，自动创建 macvlan 设备、逻辑接口（DHCP）、防火墙 WAN 区域绑定，以及 mwan3 负载均衡配置。所有生成的条目均带有 auto_ 前缀，可安全重新生成（会覆盖旧配置）。')
+                    _('指定物理接口和数量，自动创建 macvlan 设备、逻辑接口（DHCP）、防火墙 WAN 区域绑定，以及 mwan3 负载均衡配置。所有生成的条目均带有 auto_ 前缀，可安全重新生成（会覆盖旧配置）。生成完成后，请前往「自动登录配置」页面为每个接口配置对应的登录实例。')
                 ),
                 E('div', { 'class': 'cbi-section-node' }, [
                     // base iface
