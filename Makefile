@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
-PKG_VERSION:=2.0.2
+PKG_VERSION:=2.1.0
 PKG_RELEASE:=2
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
@@ -14,7 +14,7 @@ define Package/luci-app-multilogin
 	SUBMENU:=3. Applications
 	TITLE:=Multi-WAN Auto Login Manager
 	PKGARCH:=all
-	DEPENDS:=+mwan3 +curl +bash +luci-compat +luci-app-mwan3
+	DEPENDS:=+curl +bash
 endef
 
 define Package/luci-app-multilogin/description
@@ -50,6 +50,7 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login_huxi.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login_A.sh $(1)/etc/multilogin/
+	$(INSTALL_BIN) ./etc/multilogin/check_status.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/quick_setup.sh $(1)/etc/multilogin/
 endef
 

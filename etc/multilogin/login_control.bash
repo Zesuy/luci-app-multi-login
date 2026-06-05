@@ -63,8 +63,9 @@ login_interface() {
   local account=$2
   local password=$3
   local ua_type=$4
-  local login_script=$5
-  local delay_var_name=$6
+  local v6face=$5
+  local login_script=$6
+  local delay_var_name=$7
 
   eval "current_delay=\${$delay_var_name}"
 
@@ -73,9 +74,9 @@ login_interface() {
     return 3
   }
 
-  log "info" "$logical_interface Attempting login... (Account: $account, UA: $ua_type)"
+  log "info" "$logical_interface Attempting login... (Account: $account, UA: $ua_type, IPv6 IF: ${v6face:-none})"
   
-  sh "$login_script" --mwan3 "$logical_interface" --account "$account" --password "$password" --ua-type "$ua_type" >/tmp/login_output_$logical_interface 2>&1
+  sh "$login_script" --mwan3 "$logical_interface" --account "$account" --password "$password" --ua-type "$ua_type" --v6face "$v6face" >/tmp/login_output_$logical_interface 2>&1
   local login_result=$?
   local login_output=$(cat /tmp/login_output_$logical_interface 2>/dev/null)
   rm -f /tmp/login_output_$logical_interface
@@ -138,6 +139,7 @@ main() {
   declare -a accounts
   declare -a passwords
   declare -a ua_types
+  declare -a v6faces
   declare -a delays
 
   # Load login instances
@@ -149,6 +151,7 @@ main() {
     [ "$instance_enabled" != "1" ] && continue
 
     local interface=$(uci -q get multilogin."$section_name".interface)
+    local v6face=$(uci -q get multilogin."$section_name".v6face)
     local ua_type=$(uci -q get multilogin."$section_name".ua_type)
     [ -z "$ua_type" ] && ua_type="pc"
 
@@ -171,9 +174,10 @@ main() {
     accounts[$index]="$username"
     passwords[$index]="$password"
     ua_types[$index]="$ua_type"
+    v6faces[$index]="$v6face"
     delays[$index]=$INITIAL_RETRY_DELAY
 
-    log "info" "Loaded instance #$index: Interface=$interface, Account=$account_ref ($username), UA=$ua_type"
+    log "info" "Loaded instance #$index: Interface=$interface, IPv6_IF=${v6face:-none}, Account=$account_ref ($username), UA=$ua_type"
     index=$((index + 1))
   done < <(uci show multilogin | awk -F'[.=]' '$3 == "instance" {print $2}' | sort)
 
@@ -235,7 +239,7 @@ main() {
 
       if [[ "$interface_status" == "offline" ]]; then
         log "info" "$interface detected as offline, preparing to login."
-        login_interface "$interface" "${accounts[$i]}" "${passwords[$i]}" "${ua_types[$i]}" "$LOGIN_SCRIPT_PATH" "delays[$i]"
+        login_interface "$interface" "${accounts[$i]}" "${passwords[$i]}" "${ua_types[$i]}" "${v6faces[$i]}" "$LOGIN_SCRIPT_PATH" "delays[$i]"
         last_login_time[$i]=$current_time
       elif [[ "$interface_status" == "online" && ${delays[$i]} -ne $INITIAL_RETRY_DELAY ]]; then
         log "debug" "$interface is online, resetting its delay."

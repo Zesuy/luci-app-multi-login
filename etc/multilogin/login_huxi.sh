@@ -2,6 +2,7 @@
 # 虎溪模板 (创建者: Zesuy 2026/03/06) - 适配 login.cqu.edu.cn 升级版
 # 解析命令行参数
 INTERFACE=""
+V6FACE=""
 WLAN_USER_ACCOUNT=""
 WLAN_USER_PASSWORD=""
 UA_TYPE="mobile"  # 默认使用mobile UA
@@ -16,6 +17,10 @@ while [ $# -gt 0 ]; do
             ;;
         --account)
             WLAN_USER_ACCOUNT="$2"
+            shift 2
+            ;;
+        --v6face)
+            V6FACE="$2"
             shift 2
             ;;
         --password)
@@ -72,10 +77,51 @@ log 0 "调试: 逻辑接口 '$INTERFACE' 对应的物理接口是 '$PHYSICAL_INT
 # 获取当前的 MAC 地址和 IP 地址
 WLAN_USER_MAC=$(cat /sys/class/net/$PHYSICAL_INTERFACE/address)
 WLAN_USER_IP=$(ifconfig $PHYSICAL_INTERFACE | grep 'inet ' | awk '{print $2}' | sed 's/addr://')
+WLAN_USER_IPV6=""
 
 if [ -z "$WLAN_USER_IP" ]; then
     log 2 "错误: 无法获取接口 '$PHYSICAL_INTERFACE' 的IP地址"
     exit 6
+fi
+
+resolve_v6_device() {
+    local iface_name="$1"
+    local dev=""
+
+    [ -n "$iface_name" ] || return 1
+
+    dev=$(/sbin/uci -q get network."$iface_name".device)
+    [ -n "$dev" ] || dev=$(/sbin/uci -q get network."$iface_name".ifname)
+    [ -n "$dev" ] || dev=$(ifstatus "$iface_name" 2>/dev/null | jsonfilter -e '@["l3_device"]')
+    [ -n "$dev" ] || dev=$(ifstatus "$iface_name" 2>/dev/null | jsonfilter -e '@["device"]')
+
+    [ -n "$dev" ] || return 1
+    echo "$dev"
+}
+
+resolve_ipv6_address() {
+    local iface_name="$1"
+    local dev=""
+    local ipv6=""
+
+    dev=$(resolve_v6_device "$iface_name") || return 1
+    ipv6=$(ip -6 addr show dev "$dev" scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | grep -v '^fe80:' | head -n1)
+
+    [ -n "$ipv6" ] || return 1
+    echo "$ipv6"
+}
+
+encode_query_value() {
+    printf '%s' "$1" | sed 's/%/%25/g; s/:/%3A/g'
+}
+
+if [ -n "$V6FACE" ]; then
+    WLAN_USER_IPV6=$(resolve_ipv6_address "$V6FACE" || true)
+    if [ -n "$WLAN_USER_IPV6" ]; then
+        log 0 "调试: 逻辑接口 '$V6FACE' 对应的IPv6地址是 '$WLAN_USER_IPV6'"
+    else
+        log 1 "提示: 未能从 IPv6 接口 '$V6FACE' 获取全局 IPv6 地址，将继续使用 IPv4 登录"
+    fi
 fi
 
 # 定义更新后的编码 UA 参数
@@ -105,21 +151,24 @@ check_status() {
 
 # 执行登录函数
 do_login() {
+    local encoded_ipv6
+    encoded_ipv6=$(encode_query_value "$WLAN_USER_IPV6")
+
     # 根据UA类型选择最新的URL和参数 (注意: 域名、term_ua、MAC地址全零以及版本号等已更新)
     if [ "$UA_TYPE" = "pc" ]; then
-        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1004&login_method=1&user_account=%2C0%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&term_ua=$PC_UA&term_type=1&jsVersion=4.2.2&terminal_type=1&lang=zh-cn&v=1176&lang=zh-cn"
+        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1004&login_method=1&user_account=%2C0%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=$encoded_ipv6&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&term_ua=$PC_UA&term_type=1&jsVersion=4.2.2&terminal_type=1&lang=zh-cn&v=1176&lang=zh-cn"
     else
-        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1005&login_method=1&user_account=%2C1%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&term_ua=$MOBILE_UA&term_type=2&jsVersion=4.2.2&terminal_type=2&lang=zh-cn&v=1176&lang=zh-cn"
+        local LOGIN_URL="http://login.cqu.edu.cn:801/eportal/portal/login?callback=dr1005&login_method=1&user_account=%2C1%2C$WLAN_USER_ACCOUNT&user_password=$WLAN_USER_PASSWORD&wlan_user_ip=$WLAN_USER_IP&wlan_user_ipv6=$encoded_ipv6&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&term_ua=$MOBILE_UA&term_type=2&jsVersion=4.2.2&terminal_type=2&lang=zh-cn&v=1176&lang=zh-cn"
     fi
     
-    log 1 "尝试登录 ($UA_TYPE UA)，使用IP: $WLAN_USER_IP"
+    log 1 "尝试登录 ($UA_TYPE UA)，使用IP: $WLAN_USER_IP, IPv6: ${WLAN_USER_IPV6:-none}"
     local response=$(mwan3 use $INTERFACE curl -s "$LOGIN_URL")
     
     local json_response=$(echo "$response" | grep -o '{.*}')
     
     if [ -n "$json_response" ]; then
         if echo "$json_response" | grep -q '"result":1'; then
-            log 1 "登录成功！响应: $json_response IP: $WLAN_USER_IP"
+            log 1 "登录成功！响应: $json_response IP: $WLAN_USER_IP IPv6: ${WLAN_USER_IPV6:-none}"
             return 0
         else
             log 2 "登录失败！响应: $json_response"

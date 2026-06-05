@@ -8,9 +8,104 @@
 
 # Usage by rpcd: this script is called with 'list' or 'call <method>'
 
+. /usr/share/libubox/jshn.sh
+
+instance_status_text() {
+    local action="$1"
+    local code="$2"
+
+    if [ "$action" = "check" ]; then
+        case "$code" in
+            0) echo "已登录" ;;
+            1) echo "未登录" ;;
+            *) echo "状态检查失败" ;;
+        esac
+    else
+        case "$code" in
+            0) echo "登录成功" ;;
+            1) echo "登录失败" ;;
+            2) echo "已登录" ;;
+            *) echo "脚本错误" ;;
+        esac
+    fi
+}
+
+emit_instance_result() {
+    local action="$1"
+    local section="$2"
+    local alias_name="$3"
+    local interface="$4"
+    local v6face="$5"
+    local account_ref="$6"
+    local username="$7"
+    local ua_type="$8"
+    local code="$9"
+    local output="${10}"
+
+    local status_text
+    status_text=$(instance_status_text "$action" "$code")
+
+    json_init
+    json_add_string action "$action"
+    json_add_string section "$section"
+    json_add_string alias "$alias_name"
+    json_add_string interface "$interface"
+    json_add_string v6face "$v6face"
+    json_add_string account_ref "$account_ref"
+    json_add_string username "$username"
+    json_add_string ua_type "$ua_type"
+    json_add_int code "$code"
+    json_add_string status "$status_text"
+    json_add_boolean success $([ "$code" -eq 0 ] && echo 1 || echo 0)
+    json_add_string output "$output"
+    json_dump
+    printf '\n'
+}
+
+load_instance_config() {
+    local section="$1"
+
+    INSTANCE_ALIAS=$(uci -q get "multilogin.$section.alias")
+    INSTANCE_INTERFACE=$(uci -q get "multilogin.$section.interface")
+    INSTANCE_V6FACE=$(uci -q get "multilogin.$section.v6face")
+    INSTANCE_UA_TYPE=$(uci -q get "multilogin.$section.ua_type")
+    [ -n "$INSTANCE_UA_TYPE" ] || INSTANCE_UA_TYPE="pc"
+    INSTANCE_ACCOUNT_REF=$(uci -q get "multilogin.$section.account")
+    INSTANCE_USERNAME=""
+    INSTANCE_PASSWORD=""
+
+    if [ -n "$INSTANCE_ACCOUNT_REF" ]; then
+        INSTANCE_USERNAME=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.username")
+        INSTANCE_PASSWORD=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.password")
+    fi
+}
+
+validate_instance_for_action() {
+    local section="$1"
+
+    if [ -z "$section" ]; then
+        printf '{"error":"missing section"}\n'
+        return 1
+    fi
+
+    if [ "$(uci -q get "multilogin.$section")" != "instance" ]; then
+        printf '{"error":"instance not found"}\n'
+        return 1
+    fi
+
+    load_instance_config "$section"
+
+    if [ -z "$INSTANCE_INTERFACE" ] || [ -z "$INSTANCE_USERNAME" ] || [ -z "$INSTANCE_PASSWORD" ]; then
+        printf '{"error":"instance config incomplete"}\n'
+        return 1
+    fi
+
+    return 0
+}
+
 case "$1" in
     list)
-        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{}}\n'
+        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""}}\n'
         ;;
     call)
         case "$2" in
@@ -195,6 +290,112 @@ case "$1" in
                 /etc/init.d/network reload >/dev/null 2>&1 &
                 /etc/init.d/firewall reload >/dev/null 2>&1 &
                 /etc/init.d/mwan3 reload >/dev/null 2>&1 &
+
+                printf '{"result":"ok"}\n'
+                ;;
+
+            check_instance)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+
+                validate_instance_for_action "$SECTION" || exit 1
+
+                TMP_OUT=$(mktemp /tmp/multilogin-check.XXXXXX)
+                /etc/multilogin/check_status.sh \
+                    --mwan3 "$INSTANCE_INTERFACE" \
+                    --account "$INSTANCE_USERNAME" \
+                    --password "$INSTANCE_PASSWORD" \
+                    --ua-type "$INSTANCE_UA_TYPE" \
+                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
+                CODE=$?
+                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
+                rm -f "$TMP_OUT"
+
+                emit_instance_result "check" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
+                ;;
+
+            test_instance)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+
+                validate_instance_for_action "$SECTION" || exit 1
+
+                TMP_OUT=$(mktemp /tmp/multilogin-test.XXXXXX)
+                sh /etc/multilogin/login.sh \
+                    --mwan3 "$INSTANCE_INTERFACE" \
+                    --account "$INSTANCE_USERNAME" \
+                    --password "$INSTANCE_PASSWORD" \
+                    --ua-type "$INSTANCE_UA_TYPE" \
+                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
+                CODE=$?
+                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
+                rm -f "$TMP_OUT"
+
+                emit_instance_result "test" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
+                ;;
+
+            save_instance)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+                ENABLED=$(echo "$json" | jsonfilter -e '@.enabled' 2>/dev/null)
+                ALIAS_NAME=$(echo "$json" | jsonfilter -e '@.alias' 2>/dev/null)
+                INTERFACE=$(echo "$json" | jsonfilter -e '@.interface' 2>/dev/null)
+                V6FACE=$(echo "$json" | jsonfilter -e '@.v6face' 2>/dev/null)
+                ACCOUNT=$(echo "$json" | jsonfilter -e '@.account' 2>/dev/null)
+                UA_TYPE=$(echo "$json" | jsonfilter -e '@.ua_type' 2>/dev/null)
+
+                [ -n "$ENABLED" ] || ENABLED="0"
+                [ -n "$UA_TYPE" ] || UA_TYPE="pc"
+
+                if [ -z "$INTERFACE" ] || [ -z "$ACCOUNT" ]; then
+                    printf '{"error":"interface and account are required"}\n'
+                    exit 1
+                fi
+
+                if [ -n "$SECTION" ] && [ "$(uci -q get "multilogin.$SECTION")" != "instance" ]; then
+                    printf '{"error":"instance not found"}\n'
+                    exit 1
+                fi
+
+                if [ -z "$SECTION" ]; then
+                    SECTION=$(uci add multilogin instance)
+                fi
+
+                uci set "multilogin.$SECTION=instance"
+                uci set "multilogin.$SECTION.enabled=$ENABLED"
+                uci set "multilogin.$SECTION.alias=$ALIAS_NAME"
+                uci set "multilogin.$SECTION.interface=$INTERFACE"
+                uci set "multilogin.$SECTION.account=$ACCOUNT"
+                uci set "multilogin.$SECTION.ua_type=$UA_TYPE"
+                if [ -n "$V6FACE" ]; then
+                    uci set "multilogin.$SECTION.v6face=$V6FACE"
+                else
+                    uci -q delete "multilogin.$SECTION.v6face"
+                fi
+
+                uci commit multilogin
+                /etc/init.d/multilogin restart >/dev/null 2>&1 &
+
+                printf '{"result":"ok","section":"%s"}\n' "$SECTION"
+                ;;
+
+            delete_instance)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+
+                if [ -z "$SECTION" ]; then
+                    printf '{"error":"missing section"}\n'
+                    exit 1
+                fi
+
+                if [ "$(uci -q get "multilogin.$SECTION")" != "instance" ]; then
+                    printf '{"error":"instance not found"}\n'
+                    exit 1
+                fi
+
+                uci -q delete "multilogin.$SECTION"
+                uci commit multilogin
+                /etc/init.d/multilogin restart >/dev/null 2>&1 &
 
                 printf '{"result":"ok"}\n'
                 ;;
