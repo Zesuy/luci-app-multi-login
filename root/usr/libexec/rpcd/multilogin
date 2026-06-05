@@ -20,6 +20,12 @@ instance_status_text() {
             1) echo "未登录" ;;
             *) echo "状态检查失败" ;;
         esac
+    elif [ "$action" = "logout" ]; then
+        case "$code" in
+            0) echo "注销成功" ;;
+            1) echo "注销失败" ;;
+            *) echo "脚本错误" ;;
+        esac
     else
         case "$code" in
             0) echo "登录成功" ;;
@@ -105,7 +111,7 @@ validate_instance_for_action() {
 
 case "$1" in
     list)
-        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""}}\n'
+        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""}}\n'
         ;;
     call)
         case "$2" in
@@ -334,6 +340,26 @@ case "$1" in
                 emit_instance_result "test" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
                 ;;
 
+            logout_instance)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+
+                validate_instance_for_action "$SECTION" || exit 1
+
+                TMP_OUT=$(mktemp /tmp/multilogin-logout.XXXXXX)
+                sh /etc/multilogin/logout.sh \
+                    --mwan3 "$INSTANCE_INTERFACE" \
+                    --account "$INSTANCE_USERNAME" \
+                    --password "$INSTANCE_PASSWORD" \
+                    --ua-type "$INSTANCE_UA_TYPE" \
+                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
+                CODE=$?
+                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
+                rm -f "$TMP_OUT"
+
+                emit_instance_result "logout" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
+                ;;
+
             save_instance)
                 json=$(cat)
                 SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
@@ -377,6 +403,62 @@ case "$1" in
                 /etc/init.d/multilogin restart >/dev/null 2>&1 &
 
                 printf '{"result":"ok","section":"%s"}\n' "$SECTION"
+                ;;
+
+            save_account)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+                ALIAS_NAME=$(echo "$json" | jsonfilter -e '@.alias' 2>/dev/null)
+                USERNAME=$(echo "$json" | jsonfilter -e '@.username' 2>/dev/null)
+                PASSWORD=$(echo "$json" | jsonfilter -e '@.password' 2>/dev/null)
+
+                if [ -z "$USERNAME" ]; then
+                    printf '{"error":"username is required"}\n'
+                    exit 1
+                fi
+
+                if [ -n "$SECTION" ] && [ "$(uci -q get "multilogin.$SECTION")" != "account" ]; then
+                    printf '{"error":"account not found"}\n'
+                    exit 1
+                fi
+
+                if [ -z "$SECTION" ]; then
+                    SECTION=$(uci add multilogin account)
+                fi
+
+                if [ -z "$PASSWORD" ] && [ "$(uci -q get "multilogin.$SECTION.password")" = "" ]; then
+                    printf '{"error":"password is required"}\n'
+                    exit 1
+                fi
+
+                uci set "multilogin.$SECTION.alias=$ALIAS_NAME"
+                uci set "multilogin.$SECTION.username=$USERNAME"
+                if [ -n "$PASSWORD" ]; then
+                    uci set "multilogin.$SECTION.password=$PASSWORD"
+                fi
+                uci commit multilogin
+
+                printf '{"result":"ok","section":"%s"}\n' "$SECTION"
+                ;;
+
+            delete_account)
+                json=$(cat)
+                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
+
+                if [ -z "$SECTION" ]; then
+                    printf '{"error":"missing section"}\n'
+                    exit 1
+                fi
+
+                if [ "$(uci -q get "multilogin.$SECTION")" != "account" ]; then
+                    printf '{"error":"account not found"}\n'
+                    exit 1
+                fi
+
+                uci delete "multilogin.$SECTION"
+                uci commit multilogin
+
+                printf '{"result":"ok"}\n'
                 ;;
 
             delete_instance)

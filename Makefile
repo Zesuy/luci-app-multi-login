@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
-PKG_VERSION:=2.1.0
-PKG_RELEASE:=2
+PKG_VERSION:=2.2.0
+PKG_RELEASE:=4
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -51,6 +51,7 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_BIN) ./etc/multilogin/login_huxi.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login_A.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/check_status.sh $(1)/etc/multilogin/
+	$(INSTALL_BIN) ./etc/multilogin/logout.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/quick_setup.sh $(1)/etc/multilogin/
 endef
 

@@ -40,6 +40,13 @@ var callTestInstance = rpc.declare({
     expect: {}
 });
 
+var callLogoutInstance = rpc.declare({
+    object: 'multilogin',
+    method: 'logout_instance',
+    params: ['section'],
+    expect: {}
+});
+
 function optionNodes(values, current, placeholder) {
     var options = [];
 
@@ -435,8 +442,14 @@ return view.extend({
                             E('button', {
                                 'class': 'cbi-button cbi-button-apply',
                                 'type': 'button',
-                                'click': function () { self.runInstanceAction(_('单次登录测试'), callTestInstance, instance); }
-                            }, _('单次登录测试')),
+                                'click': function () { self.runInstanceAction(_('登录测试'), callTestInstance, instance); }
+                            }, _('登录测试')),
+                            ' ',
+                            E('button', {
+                                'class': 'cbi-button',
+                                'type': 'button',
+                                'click': function () { self.runInstanceAction(_('注销测试'), callLogoutInstance, instance); }
+                            }, _('注销测试')),
                             ' ',
                             E('button', {
                                 'class': 'cbi-button cbi-button-negative',
