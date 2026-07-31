@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 2 accepted; Phase 3 not started**
+Status: **Phase 3 independent review**
 
 Target branch: `codex/v3-product-rework`
 
@@ -412,6 +412,8 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | D-004 | Use offline fixtures/mocks through Phase 8; defer all real device/portal checks. | Current authorization explicitly prohibits real portal and device mutation. | All |
 | D-005 | Preserve the exponential-backoff policy but harden its implementation and add bounded jitter. | Existing product behavior remains recognizable while preventing unsafe argv/eval/temp handling and synchronized retries. | 3 |
 | D-006 | Treat `ok` as a trustworthy action result rather than “online”; offline status and already-online are non-error outcomes despite exits 1/2. | Exit codes preserve CLI state semantics while JSON can distinguish valid state from auth/transport failure. | 2 |
+| D-007 | Preserve non-empty account usernames end to end, including spaces and UTF-8, while rejecting control characters at the action boundary. | The frozen UCI contract defines username as a preserved non-empty string; identifier-only validation silently broke valid legacy data. | 3 |
+| D-008 | Portal argument parsing uses shell builtins only until production PATH sanitization and dependency checks complete. | Ambient executables must not cross the pre-validation trust boundary or change dependency failures into argument failures. | 3 |
 
 ## Progress log
 
@@ -421,7 +423,7 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | 0 | accepted | 2026-07-31; main agent, `/root/phase0_baseline`, `/root/phase0_audit`; accepted content commit `b4fe21e66d0337839788e75e8392f77e922f329d`. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit final `PASS`; independent reviewer `/root/phase0_review` found and verified the Phase 3 rpcd-launcher ordering fix, then returned `PASS`. | ShellCheck and BusyBox unavailable locally; mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation remain Phase 9 manual items. |
 | 1 | accepted | 2026-07-31; main agent, `/root/phase1_tests`, `/root/phase1_ci`; accepted content commit `f0ebfe2e88181178edfef682a9f977e36f7dfc77`. Local `14 PASS/3 SKIP`; required BusyBox/ShellCheck/shfmt mode final `18 PASS/0 SKIP`; missing-tool CI negative, all intentional bad cases, workflow full-history/pins/permissions, and diff checks passed. | `/root/phase1_review` blocked shallow checkout and incomplete future lint scope; fixes were rerun and reviewer returned `PASS`. | Generic mocks must be extended, not weakened. All shell files changed from the v2 baseline automatically enter lint. |
 | 2 | accepted | 2026-07-31; `/root/phase2_script` and Luna `/root/phase2_tests_luna`; accepted content commit `8b31696fd78857b6ff63f04d1c09082a9e70c560`. Direct offline version/self-test and required BusyBox/ShellCheck/shfmt runner passed (`19 PASS/0 SKIP`); portal groups cover strict CLI, PC/mobile, exact config/UA, stdin secret framing, ret-code race, classification, IPv4/IPv6, logout precedence/bounds, identity ambiguity, signals, and concurrency. | Independent Terra reviewer `/root/phase2_review`: `PASS`. | Real read-only status/login/logout remain `DEFERRED-MANUAL` to Phase 9; no real portal/device action occurred. |
-| 3 | pending | Not started. | — | — |
+| 3 | independent-review | Started 2026-07-31 at baseline `c136422`; self-tested 2026-08-01 by main agent, controller/RPC implementation agents, and Luna test agents. Changed the package controller, three rpcd action launchers, a narrow account-validation integration regression, runner/allowlist, and offline controller/RPC/portal tests. Required command `PATH=/tmp/multilogin-phase1-tools.pcM2io/root/usr/bin:$PATH CI=1 MULTILOGIN_REQUIRE_TOOLING=1 ./tests/run.sh` passes `21/21`, `0` skips; sub-suites pass portal `9`, controller `18`, and executable RPC `13`. First Terra review found pre-validation ambient `awk` execution; D-008 shell-only parsing plus BusyBox/empty-PATH regression now proves `5/dependency_error`, not exit `4`. Timing evidence includes exact `8/16/32`, no early retry, cap-before-jitter at `15/17`, success/interface reset, and multi-instance isolation. Shell/Bash/BusyBox syntax, ShellCheck, shfmt, safety scan, baseline reproduction, expected failures, signal cleanup, secret scans, and `git diff --check` pass. | First independent Terra verdict `BLOCK`; same reviewer rereview pending after the resolved finding. | D-007/D-008 added. Tests remain offline; real portal/device checks stay `DEFERRED-MANUAL` to Phase 9. |
 | 4 | pending | Not started. | — | — |
 | 5 | pending | Not started. | — | Real post-activation status deferred. |
 | 6 | pending | Not started. | — | Subjective UX acceptance remains manual. |

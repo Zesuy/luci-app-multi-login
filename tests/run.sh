@@ -283,5 +283,9 @@ negative_tests
 	node "$TEST_DIR/test-cqu-portal.mjs"
 )
 pass 'unified portal offline black-box suite'
+node "$TEST_DIR/test-controller.mjs"
+pass 'controller offline black-box suite'
+node "$TEST_DIR/test-rpc-actions.mjs"
+pass 'RPC action contract suite'
 
 printf '\n%d checks passed; %d optional tooling checks skipped.\n' "$PASS_COUNT" "$SKIP_COUNT"

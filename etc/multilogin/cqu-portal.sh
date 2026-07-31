@@ -147,6 +147,18 @@ safe_identifier() {
 	return 0
 }
 
+safe_account() {
+	SAFE_VALUE=$1
+	[ -n "$SAFE_VALUE" ] || return 1
+	case $SAFE_VALUE in
+	*[[:cntrl:]]*) return 1 ;;
+	esac
+	# Account names are preserved UCI strings, not shell/UCI identifiers.
+	# Quoting and curl-config escaping safely preserve spaces and UTF-8; only
+	# control characters that cannot form a safe single argument are rejected.
+	return 0
+}
+
 validate_ipv4() {
 	VALIDATE_IPV4_VALUE=$1
 	printf '%s\n' "$VALIDATE_IPV4_VALUE" | awk -F. '
@@ -253,7 +265,7 @@ parse_arguments() {
 		safe_identifier "$V6FACE" 64 || return 1
 	fi
 	if [ "$SEEN_ACCOUNT" -eq 1 ]; then
-		safe_identifier "$ACCOUNT" 128 || return 1
+		safe_account "$ACCOUNT" || return 1
 	fi
 	if [ "$SEEN_UA" -eq 1 ]; then
 		case $UA_TYPE in

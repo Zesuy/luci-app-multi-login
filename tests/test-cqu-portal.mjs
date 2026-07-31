@@ -129,7 +129,9 @@ function networkResponses(harness, responses) {
 function invoke(harness, args, options = {}) {
   if (options.responses)
     networkResponses(harness, options.responses);
-  const result = spawnSync(script, args, {
+  const command = options.busybox ?? script;
+  const commandArgs = options.busybox ? ['ash', script, ...args] : args;
+  const result = spawnSync(command, commandArgs, {
     env: harness.env,
     encoding: 'utf8',
     input: options.input,
@@ -138,6 +140,11 @@ function invoke(harness, args, options = {}) {
   if (result.error)
     throw result.error;
   return { ...result, status: result.status ?? 128 };
+}
+
+function busyboxPath() {
+  const lookup = spawnSync('/bin/sh', ['-c', 'command -v busybox'], { env: process.env, encoding: 'utf8' });
+  return lookup.status === 0 ? lookup.stdout.trim() : '';
 }
 
 function envelope(result, expectedStatus, action, outcome, errorKind) {
@@ -288,6 +295,22 @@ function syntaxAndMetadataTests() {
     assertSecretAbsent(harness, result);
   }
   pass('strict argument parser rejects missing, unknown, extra, invalid, and password argv');
+
+  // Argument parsing runs before PATH is normalized or dependencies are
+  // checked. A valid account must therefore use shell-only validation: with
+  // an empty ambient PATH it reaches dependency_error rather than being
+  // misclassified as argument_error because an external helper is missing.
+  const busybox = busyboxPath();
+  let harness = createHarness('args-unicode-empty-path', { env: { PATH: '' } });
+  let result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', '学生 user', '--ua-type', 'pc'], { busybox: busybox || undefined });
+  envelope(result, 5, 'login', 'dependency_error', 'dependency');
+  assertNoNetwork(harness, 'UTF-8/space account with empty PATH');
+
+  harness = createHarness('args-control-account');
+  result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'bad\naccount', '--ua-type', 'pc'], { busybox: busybox || undefined });
+  envelope(result, 4, 'login', 'argument_error', 'arguments');
+  assertNoNetwork(harness, 'control-character account');
+  pass(`shell-only account validation handles UTF-8/spaces and rejects controls${busybox ? ' under BusyBox ash' : ''}`);
 }
 
 function statusTests() {
@@ -379,6 +402,19 @@ function loginTests() {
   deepEqual(params(request, 'wlan_user_ip'), ['192.0.2.10'], 'login plain IPv4');
   deepEqual(params(request, 'wlan_user_ipv6'), ['2001:db8::10'], 'login optional IPv6');
   deepEqual(params(request, 'wlan_user_mac'), ['020000000010'], 'login normalized MAC');
+
+  harness = createHarness('login-unicode-account', { secret: 'unicode fixture passphrase' });
+  result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', '学生 user', '--ua-type', 'pc'], {
+    input: `${harness.secret}\n`,
+    responses: [{ body: offline() }, { body: { result: 1, ret_code: 0 } }, { body: online(0) }],
+  });
+  envelope(result, 0, 'login', 'login_success', null);
+  const unicodeRequest = reports(harness)[1];
+  const unicodeAccount = ',0,学生 user';
+  const accountEvidence = params(unicodeRequest, 'user_account')[0];
+  equal(accountEvidence.length, unicodeAccount.length, 'UTF-8/space account framing length');
+  equal(accountEvidence.sha256, digest(unicodeAccount), 'UTF-8/space account framing digest');
+  assertConfigSecurity(harness, true);
 
   harness = createHarness('login-mobile-success', { secret: 'mobile fixture passphrase' });
   result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'fixture-account', '--ua-type', 'mobile'], {
