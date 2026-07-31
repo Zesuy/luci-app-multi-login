@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 0 not started**
+Status: **Phase 0 independent-review**
 
 Target branch: `codex/v3-product-rework`
 
@@ -91,7 +91,7 @@ Do not commit large logs, SDKs, captures, credentials, runtime candidates, or de
 - Phase 0 freezes all public and migration contracts.
 - Phase 1 supplies the harness required by Phases 2–8.
 - Phase 2 supplies the unified script API required by Phases 3–6.
-- Phase 3 integrates the controller before compatibility wrappers and migration are finalized in Phase 4.
+- Phase 3 integrates both the controller and the three existing RPC action launchers before compatibility wrappers and migration are finalized in Phase 4.
 - Phase 4 establishes install/upgrade/downgrade behavior before update activation in Phase 5.
 - Phase 5 supplies fixed RPC methods used by the Phase 6 UI.
 - Phase 6 must land before Phase 7 reorganizes product navigation and permissions.
@@ -197,16 +197,18 @@ Call `cqu-portal.sh login` from `login_control.bash`. Remove `eval`, use secure 
 
 **Pre-phase investigation**
 
-1. Trace UCI loading, per-instance arrays, mwan3 status parsing, last-attempt timing, service-disable behavior, signals, and every current delay transition.
+1. Trace UCI loading, per-instance arrays, mwan3 status parsing, last-attempt timing, service-disable behavior, signals, every current delay transition, and the rpcd `check_instance`/`test_instance`/`logout_instance` child-process paths.
 2. Freeze outcome-to-delay behavior from the Phase 0 contract, including whether auth failures back off differently from transport/protocol failures.
 3. Define deterministic jitter injection and upper/lower bounds so tests cannot flake or create login storms.
 
 **Detailed tasks and ownership**
 
-- Implementation subagent owns `login_control.bash` and no portal-script code.
+- Controller implementation subagent owns `login_control.bash` and no portal-script code.
+- A disjoint RPC-launcher implementation subagent owns only the `check_instance`, `test_instance`, and `logout_instance` launch/result paths in `root/usr/libexec/rpcd/multilogin`; full update/configuration RPC refactoring remains Phase 5/7.
 - Test subagent owns fake-clock/multi-instance/controller integration tests.
 - Replace indirection/eval with indexed arrays or safe namerefs compatible with packaged Bash; quote all values.
 - Pipe each password to the portal script, capture only redacted output in a `mktemp` file/directory, and clean up on normal/signal exits.
+- Migrate the three current RPC actions to `cqu-portal.sh`: status/logout pass no password; login pipes the UCI password through stdin. Preserve safe legacy top-level action fields for cached LuCI, but never return username or arbitrary child output.
 - Preserve the existing UCI timing keys and exponential-backoff responsibility; cap before adding bounded jitter and reset deterministically on success/interface recovery.
 - Distinguish success, already-online, auth rejection, transport/protocol error, local configuration error, and disabled/no-instance behavior without busy loops.
 
@@ -214,6 +216,7 @@ Call `cqu-portal.sh login` from `login_control.bash`. Remove `eval`, use secure 
 
 - Fake-time tests assert exact base delay, cap, reset, jitter bounds, no cross-instance delay contamination, and no retry before due time.
 - Process-capture tests prove passwords are stdin-only and absent from argv, log, temp filenames, output, and crash paths.
+- RPC action tests prove check/test/logout remain callable before Phase 4 wrapper replacement and preserve their safe cached-client status/code behavior.
 - Service disable/no-instance/mwan3-unavailable/signal tests terminate or sleep as contracted without host mutation.
 
 Gate: mocked timing tests cover success, auth failure, transport failure, already-online, multiple instances, delay reset/cap, and service disabled state.
@@ -257,10 +260,11 @@ Add fixed RPC methods for script info, check, stage, validate, activate, rollbac
 
 **Detailed tasks and ownership**
 
-- Implementation subagent owns backend helpers/RPC and update state storage; it does not edit LuCI views.
+- Implementation subagent owns backend helpers/RPC, update state storage, and the Custom draft get/save/discard backend required by Phase 6; it does not edit LuCI views.
 - Test subagent owns local HTTP/curl mocks and backend state-machine/concurrency tests.
 - Implement fixed methods for info/check/stage/validate/activate/rollback/restore with a consistent non-secret envelope and bounded diagnostics.
-- Enforce HTTPS, exact fixed Raw origin/path, redirect policy, timeout/size limits, regular-file/mode checks, API/version metadata, `sh -n`, and offline `self-test` before candidate eligibility.
+- Implement fixed Custom draft get/save/discard methods with base-hash concurrency and the same isolation/locking rules, but do not build their LuCI UI yet.
+- Enforce HTTPS, exact fixed Raw origin/path, redirect policy, timeout/size limits, regular-file/mode checks, API/version metadata, and `sh -n` during non-executing stage. Because OpenWrt provides no assumed shell sandbox, executable `self-test` validation requires explicit root-code confirmation plus the exact staged hash; unattended tests execute only fixtures/mocks.
 - Lock all mutations; isolate candidate and custom draft; hash every state; preserve last-known-good; fsync/atomic rename where available; journal activation.
 - After activation run offline self-test plus a status call. During unattended execution the status call uses mocks; a real read-only status is `DEFERRED-MANUAL`. Roll back automatically on failure.
 - Never download or replace the IPK, controller, RPC, UI, config, or any file other than the managed `cqu-portal.sh` state.
@@ -289,7 +293,7 @@ Replace direct file editing and template overwrite with Managed and Custom modes
 - Test subagent owns RPC stubs, render/action state tests, static ACL assertions, keyboard checks, and narrow-viewport evidence.
 - Remove `fs.read`, `fs.write`, `fs.exec`, obsolete template activation, and implicit service restart from the browser.
 - Managed mode displays immutable source identity, versions/hashes, candidate validation, explicit activation, rollback, and restore actions.
-- Custom mode edits a server-side draft, never the active file; save with base hash, validate, explicitly activate, discard, and recover conflict without losing typed content.
+- Custom mode edits a server-side draft, never the active file; save with base hash, require explicit root-code confirmation before executable validation, explicitly activate, discard, and recover conflict without losing typed content.
 - Disable duplicate actions, show progress, preserve actionable errors, require confirmation for activation/rollback/discard, and display a root-code warning.
 
 **Acceptance and verification**
@@ -391,7 +395,7 @@ The unattended executor must stop before, but only before, the following actions
 - real portal login, logout, unbind, or any request intended to change authentication state;
 - installing, removing, upgrading, or downgrading an IPK on a real device;
 - changing or reloading a real device's network, firewall, mwan3, DHCP, routing, service state, or rebooting it;
-- activating a downloaded/custom script on a real device;
+- executing validation/self-test for, or activating, a downloaded/custom script on a real device;
 - choosing unresolved product behavior or accepting subjective UX/visual results;
 - pushing a branch, opening/merging a PR, creating a tag, dispatching a privileged workflow, or publishing a GitHub Release;
 - destructive cleanup outside a test root or any step that risks losing management access.
@@ -413,7 +417,7 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | Phase | State | Evidence / commit | Review | Decisions / remaining risks |
 | --- | --- | --- | --- | --- |
 | Plan | accepted | Repository, portal profile, and existing plan inspected on 2026-07-31. Initial review returned `BLOCK`; four gate/durability ambiguities were corrected. | Independent reviewer `/root/plan_review`: `PASS`. | Plan is tracked and committed before Phase 0. |
-| 0 | pending | Not started. | — | Real device and portal checks are deferred to Phase 9. |
+| 0 | independent-review | Started 2026-07-31 at `e772078`. Main agent froze `docs/v3/contracts.md`; `/root/phase0_baseline` produced the deterministic generator/report. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit `/root/phase0_audit`: final `PASS`. Gate reviewer found a Phase 4 wrapper/Phase 5 rpcd ordering break; minimal action-launcher migration was moved to Phase 3 and rereview is pending. | ShellCheck and BusyBox are unavailable locally and become mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation are deferred to Phase 9. |
 | 1 | pending | Not started. | — | — |
 | 2 | pending | Not started. | — | Real status/login/logout deferred. |
 | 3 | pending | Not started. | — | — |
