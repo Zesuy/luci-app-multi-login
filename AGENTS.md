@@ -13,5 +13,6 @@
 - Never run a real portal login or logout without explicit user authorization. Read-only status checks are allowed.
 - For the current unattended run, keep all portal/device checks offline until Phase 9, as required by the execution plan.
 - Never expose passwords in argv, logs, RPC responses, fixtures, diagnostics, or browser-visible UCI data.
+- Limit unattended gates to compile/lint/static checks, read-only artifact inspection, and host-independent product logic. Do not build or extend OpenWrt/opkg/procd/UCI/service/network/rootfs/reboot simulations; defer those integration claims to Phase 9.
 - Use CodeGraph first for structural code questions; use literal search only for text or non-indexed shell/config files.
 - Preserve unrelated user changes and do not rewrite completed phases without evidence of a regression.

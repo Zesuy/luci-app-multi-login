@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 3 accepted; Phase 4 not started**
+Status: **Phase 4 investigating**
 
 Target branch: `codex/v3-product-rework`
 
@@ -19,6 +19,7 @@ This is the durable control document for unattended, multi-agent execution. Read
 - Remote scripts are staged, validated, manually activated, and automatically rolled back on failure.
 - LuCI uses fixed `multilogin` RPC methods; it must not directly read, write, chmod, or execute scripts.
 - Managed mode is the default. Custom scripts are drafts until explicitly validated and activated.
+- Unattended acceptance is limited to compilation, static analysis, artifact inspection, and pure product-logic tests. It does not emulate OpenWrt, opkg, procd, UCI, services, routing, reboot, or a router root filesystem.
 
 ## Repository findings that constrain the work
 
@@ -40,7 +41,7 @@ Use the dated, local `debug-cqu-portal` profile as the protocol baseline. Do not
 - Login: `/eportal/portal/login`; HTTP `User-Agent` must exactly equal `term_ua`.
 - Logout: `mac/unbind`, then `custom/checkLogout`, then bounded `online_list` polling until `result=0`.
 - The installed `mwan3 use` splits arguments containing spaces because it executes unquoted `$*`. The portal script therefore creates a mode-0600 curl config and invokes only `mwan3 use "$interface" curl --config "$config"`.
-- All development through Phase 8 uses redacted fixtures, mocks, and simulated root filesystems. No real portal login/logout, real credentials, real router mutation, or real network/firewall/mwan3 change is authorized.
+- All development through Phase 8 uses redacted protocol fixtures and host-independent logic inputs only. No real portal login/logout, real credentials, router/rootfs emulation, real router mutation, or real network/firewall/mwan3 change is authorized.
 
 ## Execution and acceptance model
 
@@ -54,12 +55,24 @@ Each phase uses this state sequence:
 
 An automated gate may be recorded as `PASS-AUTOMATED` with named `DEFERRED-MANUAL` checks. This counts as acceptance for progression only when the deferred check is explicitly prohibited by the human-intervention boundary and is also listed in Phase 9. A reviewer must confirm that no code-testable requirement was deferred.
 
+### Automated validation scope
+
+- **Compile/static:** shell and JavaScript syntax, ShellCheck, shfmt, JSON/menu/ACL validation, secret/unsafe-pattern scanning, SDK compilation, workflow validation, and read-only artifact metadata/file-list inspection.
+- **Pure logic:** parsers, request/response classification, CLI mapping, retry arithmetic, metadata/version rules, state-transition reducers, ownership plans, validation predicates, and deterministic serialization. Inputs and outputs stay in memory or ordinary temporary files and do not claim operating-system integration.
+- **Narrow boundary stubs:** a small child-process stub may capture argv/stdin or return a fixture when required to prove a repository-owned security contract. It must not reproduce OpenWrt command behavior or an opkg/service lifecycle.
+- **Explicitly out of scope unattended:** simulated router rootfs, fake opkg unpack/hooks, fake procd/init/UCI/ubus/mwan3/network/firewall behavior, service-state matrices, reboot recovery simulation, and full-tree lifecycle emulation.
+- End-to-end install, upgrade, downgrade, service restoration, network ownership/recovery, and portal/device behavior are `DEFERRED-MANUAL` to Phase 9. Earlier phases verify their source-level design and compileability only.
+- The default local/CI runner contains only the allowed scope above. Historical platform-simulation suites are removed from that runner; they may be deleted or retained only as explicitly non-gating developer diagnostics, and no further effort is spent expanding them.
+- Host-only checks use no real sleeps, retry loops, or environment emulation. The non-SDK gate has a 60-second CI budget and each child check has an explicit timeout; SDK compilation runs as a separate Phase 8 job.
+
 ### Agent roles
 
 - **Main agent / phase owner:** performs CodeGraph-first structural investigation, freezes the phase scope, assigns non-overlapping file ownership, integrates work, runs the full gate, records evidence, and decides whether review findings are blocking.
 - **Implementation subagent:** changes only the assigned files or responsibility. It must read this plan and `AGENTS.md`, preserve unrelated edits, run focused tests, and report changed files, commands, results, assumptions, and risks.
 - **Test subagent:** owns tests/fixtures or performs adversarial validation independently of implementation. It must add a failing regression case before or with a bug fix when practical, and must inspect secret leakage and failure paths, not only happy paths.
 - **Review subagent:** is read-only for the review turn. It receives the phase diff, contract, gate, and test summary; checks correctness, compatibility, security, and scope; then returns exactly `PASS` or `BLOCK` followed by evidence. It must not review its own implementation.
+
+Model allocation: ordinary test work uses Luna with high reasoning; implementation and independent review use Terra with high reasoning. Sol xhigh is reserved for an explicit escalation, not routine test execution.
 
 The main agent does not delegate initial structural exploration. Implementation and test work may run concurrently only when file ownership is disjoint and the phase contract is already frozen. Review starts only after the integrated full gate passes.
 
@@ -79,12 +92,12 @@ Do not commit large logs, SDKs, captures, credentials, runtime candidates, or de
 
 ### General gate rules
 
-- Run focused tests during implementation, then the repository-wide test command before review.
-- Tests must run without Internet or a campus network unless the phase explicitly tests a fixed Raw download through a local HTTP mock.
+- Run bounded focused compile/static/pure-logic checks during implementation, then the repository-wide bounded gate before review. Do not run historical platform-simulation suites as part of unattended acceptance.
+- Tests must run without Internet or a campus network. Raw download policy is checked as source-level and pure URL/metadata logic; network behavior is not emulated.
 - Intentional invalid syntax, invalid metadata, secret sentinels, interrupted writes, and command failures must fail safely.
 - Preserve UCI fields, non-secret CLI flags, observable exit meanings, service enabled/running state, and custom user data unless the Phase 0 contract records a deliberate break.
 - Never place a password in argv, logs, RPC output, browser-visible UCI payloads, fixtures, diagnostics, or committed test artifacts. Internal v3 callers use stdin. The Phase 0 contract must explicitly resolve the legacy `--password` incompatibility.
-- Every write/update/migration path must be atomic where possible, lock against concurrency, and have a tested recovery or rollback path.
+- Every write/update/migration path must be atomic where possible and lock against concurrency. Pure transition logic and source ordering are automated; operating-system recovery behavior is verified only in Phase 9.
 
 ## Dependencies
 
@@ -134,19 +147,19 @@ Gate: contracts are unambiguous, the worktree baseline is clean, and the baselin
 
 ### Phase 1 — Test foundation
 
-Add an offline test runner, redacted JSONP fixtures, command mocks, BusyBox ash checks, ShellCheck, shfmt, JSON/ACL validation, and secret-sentinel tests. Add the initial PR CI workflow.
+Add a bounded offline test runner, redacted JSONP fixtures, BusyBox ash checks, ShellCheck, shfmt, JSON/ACL validation, secret-sentinel tests, and pure-logic tests. Add the initial PR CI workflow.
 
 **Pre-phase investigation**
 
 1. Detect locally available `bash`, BusyBox `ash`, ShellCheck, shfmt, JSON tools, Node, and workflow validators; record optional versus mandatory tools.
-2. Determine which OpenWrt commands require mocks: `uci`, `ubus`, `jsonfilter`, `ifstatus`, `ip`, `mwan3`, `curl`, `logger`, `procd`, init scripts, filesystem capacity, clock, randomness, and signals.
+2. Identify repository-owned functions that can be checked without reproducing OpenWrt commands; record every device/OS integration claim as Phase 9 manual coverage.
 3. Design fixtures from the profile for offline/PC/mobile/auth failure/transport error/malformed JSONP/logout delay without retaining real IPs, MACs, accounts, or messages that identify a user.
 
 **Detailed tasks and ownership**
 
-- Test subagent owns `tests/`, fixtures, mocks, the single runner, and test documentation.
+- Test subagent owns `tests/`, protocol fixtures, pure-logic cases, the single runner, and test documentation.
 - Implementation subagent owns CI/workflow and formatting/lint configuration; it must not weaken tests when adapting CI.
-- Provide deterministic temp roots, PATH-injected command mocks, fake time/randomness, captured argv/stdin/stdout/stderr, and cleanup assertions.
+- Provide deterministic logic inputs and outputs. Use only narrow argv/stdin capture stubs for secret-boundary checks; do not build fake router commands, services, package managers, or root filesystems.
 - Add syntax checks for all shell/JSON/JavaScript files and a scanner for credential patterns, sentinel values, unsafe temp names, `eval`, and secret-bearing subprocess argv.
 - Add expected-failure self-tests proving bad syntax, malformed fixtures, a leaked sentinel, and a failed command make the runner nonzero.
 - CI starts with offline lint/unit tests and artifact-free logs; pin actions and least-privilege permissions.
@@ -155,7 +168,7 @@ Add an offline test runner, redacted JSONP fixtures, command mocks, BusyBox ash 
 
 - One documented command runs the complete local suite from a clean checkout.
 - The runner works under the supported host shell and invokes BusyBox `ash` for POSIX scripts when available; CI makes it mandatory.
-- Fixtures pass a secret/identifier audit and all mocks prove that no unexpected network or host mutation occurs.
+- Fixtures pass a secret/identifier audit, and the runner contains no router/package/service/network emulation.
 - Reviewer reruns the suite and at least one expected-failure case independently.
 
 Gate: one command runs all tests; fixtures contain no secrets; intentional bad cases fail.
@@ -173,7 +186,7 @@ Implement `cqu-portal.sh status|login|logout|version|self-test`. Share interface
 **Detailed tasks and ownership**
 
 - Implementation subagent owns `etc/multilogin/cqu-portal.sh` only and implements the frozen API without controller/RPC changes.
-- Test subagent owns protocol fixtures/mocks and black-box action tests, including exact curl config inspection.
+- Test subagent owns redacted protocol fixtures and host-independent parser/request/classification tests. A narrow curl-config serializer test may inspect generated text, but it must not emulate mwan3, routing, interfaces, or a portal connection.
 - Resolve logical interface/device, IPv4/optional IPv6/MAC, normalize MAC, and encode only fields required by the profile.
 - Use a mode-0600 temp directory/config, supply the password through stdin, invoke `mwan3 use <iface> curl --config <path>` without space-bearing arguments, and remove secrets on every exit/signal.
 - Match header UA and `term_ua`; after successful login, confirm expected `phone_flag`; classify already-online distinctly.
@@ -182,14 +195,14 @@ Implement `cqu-portal.sh status|login|logout|version|self-test`. Share interface
 
 **Acceptance and verification**
 
-- Black-box tests cover both UAs, IPv4/IPv6, missing interface data, offline/online, auth/protocol/transport failures, malformed JSONP, dependency absence, timeout, signal cleanup, and concurrent temp isolation.
-- Captured curl invocation has no password or spaced UA; config permissions/content are correct and deleted afterward.
+- Pure-logic cases cover both UAs, IPv4/IPv6 serialization, offline/online classification, auth/protocol/transport outcomes, malformed JSONP, and logout polling bounds.
+- Source/static checks prove password stdin framing and absence from fixed argv; serializer tests prove UA/config content. Actual mwan3/curl/tempfile behavior is Phase 9 coverage.
 - Responses and logs contain stable outcomes and no raw password or unsafe echoed portal payload.
-- Real-device status/login/logout is recorded `DEFERRED-MANUAL`; offline device-command mocks satisfy the automated portion and the real check is repeated in Phase 9.
+- Real-device status/login/logout, dependency discovery, interface lookup, tempfile cleanup under signals, and mwan3/curl execution are `DEFERRED-MANUAL` to Phase 9.
 
-Gate: all offline protocol tests pass; no secret leaks; read-only device status passes. Real login/logout requires user approval and retained evidence.
+Gate: shell compiles/lints; protocol parsing, serialization, classification, CLI validation, and secret-boundary logic pass. All device execution is deferred.
 
-Current-run gate interpretation: preserve the original release gate above, but substitute the offline mocked device-status boundary for progression through Phase 8. The real read-only device-status clause is `DEFERRED-MANUAL` to Phase 9 under the user's explicit fixture/mock-only restriction; it must pass before RC device acceptance can pass.
+Current-run gate interpretation: no mocked device-status substitute is required. The entire device-status clause is `DEFERRED-MANUAL` to Phase 9 and must pass before RC device acceptance.
 
 ### Phase 3 — Controller integration
 
@@ -205,7 +218,7 @@ Call `cqu-portal.sh login` from `login_control.bash`. Remove `eval`, use secure 
 
 - Controller implementation subagent owns `login_control.bash` and no portal-script code.
 - A disjoint RPC-launcher implementation subagent owns only the `check_instance`, `test_instance`, and `logout_instance` launch/result paths in `root/usr/libexec/rpcd/multilogin`; full update/configuration RPC refactoring remains Phase 5/7.
-- Test subagent owns fake-clock/multi-instance/controller integration tests.
+- Test subagent owns extracted/pure retry arithmetic, outcome mapping, and multi-instance state-isolation tests.
 - Replace indirection/eval with indexed arrays or safe namerefs compatible with packaged Bash; quote all values.
 - Pipe each password to the portal script, capture only redacted output in a `mktemp` file/directory, and clean up on normal/signal exits.
 - Migrate the three current RPC actions to `cqu-portal.sh`: status/logout pass no password; login pipes the UCI password through stdin. Preserve safe legacy top-level action fields for cached LuCI, but never return username or arbitrary child output.
@@ -214,27 +227,29 @@ Call `cqu-portal.sh login` from `login_control.bash`. Remove `eval`, use secure 
 
 **Acceptance and verification**
 
-- Fake-time tests assert exact base delay, cap, reset, jitter bounds, no cross-instance delay contamination, and no retry before due time.
-- Process-capture tests prove passwords are stdin-only and absent from argv, log, temp filenames, output, and crash paths.
+- Pure timing tests assert exact base delay, cap, reset, jitter bounds, no cross-instance delay contamination, and due-time decisions.
+- A narrow child stub proves login credentials cross only stdin and not fixed argv. Source/static checks cover log/output/temp-name construction; actual process logs, temp cleanup, and crash behavior are Phase 9 checks.
 - RPC action tests prove check/test/logout remain callable before Phase 4 wrapper replacement and preserve their safe cached-client status/code behavior.
-- Service disable/no-instance/mwan3-unavailable/signal tests terminate or sleep as contracted without host mutation.
+- Static control-flow review covers service-disable/no-instance/mwan3-unavailable/signal branches; procd, UCI, mwan3, and process lifecycle are not emulated.
 
-Gate: mocked timing tests cover success, auth failure, transport failure, already-online, multiple instances, delay reset/cap, and service disabled state.
+Gate: Bash compiles/lints; pure timing/outcome tests cover success, auth failure, transport failure, already-online, multiple instances, and delay reset/cap; source checks prove no `eval`, secret argv, or predictable temp path.
 
 ### Phase 4 — Compatibility and migration
 
-Convert old action scripts to wrappers. In `preinst`, snapshot legacy files before unpacking. After unpacking, classify known stock hashes versus custom scripts, preserve custom bundles without activating them, migrate idempotently, and restore the previous enabled/running state. Prove the supported v2 downgrade lifecycle.
+Convert old action scripts to wrappers. Encode `preinst`/`postinst` migration, stock/custom classification, service-state intent, and the supported v2 downgrade contract. Automated work verifies source logic and compileability; real opkg lifecycle behavior is proved only in Phase 9.
 
 **Pre-phase investigation**
 
-1. Capture stock hashes/modes for every supported v2 source version and determine opkg ordering for `preinst`, unpack, `postinst`, `prerm`, and `postrm` with and without `IPKG_INSTROOT`.
+1. Capture stock hashes/modes for every supported v2 source version and document the expected hook order from package metadata/OpenWrt documentation without emulating opkg.
 2. Define fresh/stock/custom/partial-v3 states, service enabled/running markers, disk-full/interruption points, and downgrade expectations.
 3. Inventory documentation or LuCI callers that still invoke legacy action paths or `--check-only`.
+4. Classify every current default-runner suite as compile/static, pure logic, narrow security boundary, or platform simulation; freeze a reduced unattended runner before further Phase 4 review.
 
 **Detailed tasks and ownership**
 
 - Implementation subagent owns Makefile lifecycle hooks, migration helper, wrappers, and package file list.
-- Test subagent owns simulated-rootfs/opkg lifecycle tests and immutable input bundles for stock/custom cases.
+- Test subagent owns the bounded-runner refactor, wrapper CLI mapping, hash/classification predicates, manifest/state serialization, and static package/hook assertions. It does not own a simulated rootfs/opkg/service harness.
+- Remove `tests/test-phase4.mjs` from the required runner and extract only its host-independent assertions into a small logic/static suite. Do the same runner-level exclusion for older portal/controller/RPC platform simulations; retain narrow argv/stdin capture only where it directly proves the secret contract.
 - Wrappers translate supported non-secret legacy flags to `cqu-portal.sh` actions and preserve contracted exit meanings; internal callers never depend on secret argv.
 - `preinst` records service state and snapshots legacy scripts before overwrite. `postinst` classifies exact stock hashes, preserves unknown/custom bundles with metadata, installs managed mode, and restores prior enabled/running state.
 - All migration writes use a lock, journal/states, mode checks, atomic rename, sufficient-space check, and idempotent recovery.
@@ -242,11 +257,13 @@ Convert old action scripts to wrappers. In `preinst`, snapshot legacy files befo
 
 **Acceptance and verification**
 
-- Tests compare full trees, modes, hashes, service calls, and journals for fresh install, stock/custom upgrade, interruption at each write boundary, rerun, restart, uninstall, and downgrade.
-- No custom content is executed or overwritten, and failed migrations leave either the old working state or a resumable journal.
-- Package-managed versus runtime-updateable ownership is explicit in manifests and tests.
+- Static/source checks confirm package-managed versus runtime-updateable ownership, exact stock hashes, conffile declaration, hook embedding, lock/atomic-write primitives, non-secret manifests, and fail-closed branch ordering.
+- Pure logic tests cover wrapper mapping, version/hash classification, lifecycle-state transitions, service-state intent mapping, and downgrade metadata validation without executing an opkg lifecycle.
+- Fresh/upgrade/downgrade full-tree results, interruption recovery, modes as installed by opkg, and actual service restoration are `DEFERRED-MANUAL` to Phase 9.
 
-Gate: fresh, stock-upgrade, custom-upgrade, interrupted migration, repeated migration, restart, and supported downgrade tests pass without data loss.
+Gate: package and hook sources compile/lint; package file ownership/conffile/static invariants pass; wrapper and migration decision logic pass. No automated claim is made about real fresh install, upgrade, interruption recovery, service restoration, uninstall, or downgrade.
+
+Required unattended command after the runner refactor: `CI=1 MULTILOGIN_REQUIRE_TOOLING=1 ./tests/run.sh`, with BusyBox, ShellCheck, and shfmt available on `PATH`. Its summary must list only compile/static/pure-logic/narrow-boundary groups and complete within a bounded host-only budget.
 
 ### Phase 5 — Raw update backend
 
@@ -261,21 +278,21 @@ Add fixed RPC methods for script info, check, stage, validate, activate, rollbac
 **Detailed tasks and ownership**
 
 - Implementation subagent owns backend helpers/RPC, update state storage, and the Custom draft get/save/discard backend required by Phase 6; it does not edit LuCI views.
-- Test subagent owns local HTTP/curl mocks and backend state-machine/concurrency tests.
+- Test subagent owns pure URL/redirect/metadata/version/transition validation and RPC input-contract tests. It does not run a local HTTP server or emulate curl/OpenWrt filesystem behavior.
 - Implement fixed methods for info/check/stage/validate/activate/rollback/restore with a consistent non-secret envelope and bounded diagnostics.
 - Implement fixed Custom draft get/save/discard methods with base-hash concurrency and the same isolation/locking rules, but do not build their LuCI UI yet.
-- Enforce HTTPS, exact fixed Raw origin/path, redirect policy, timeout/size limits, regular-file/mode checks, API/version metadata, and `sh -n` during non-executing stage. Because OpenWrt provides no assumed shell sandbox, executable `self-test` validation requires explicit root-code confirmation plus the exact staged hash; unattended tests execute only fixtures/mocks.
+- Enforce HTTPS, exact fixed Raw origin/path, redirect policy, timeout/size limits, regular-file/mode checks, API/version metadata, and `sh -n` during non-executing stage. Because OpenWrt provides no assumed shell sandbox, executable `self-test` validation requires explicit root-code confirmation plus the exact staged hash; unattended tests validate only the decision logic and metadata.
 - Lock all mutations; isolate candidate and custom draft; hash every state; preserve last-known-good; fsync/atomic rename where available; journal activation.
-- After activation run offline self-test plus a status call. During unattended execution the status call uses mocks; a real read-only status is `DEFERRED-MANUAL`. Roll back automatically on failure.
+- After activation run offline self-test plus a status call. Execution, filesystem activation, rollback, curl behavior, and real read-only status are `DEFERRED-MANUAL`; automated tests cover their state-transition decisions only.
 - Never download or replace the IPK, controller, RPC, UI, config, or any file other than the managed `cqu-portal.sh` state.
 
 **Acceptance and verification**
 
-- State-machine tests assert exact active/candidate/LKG hashes and modes after every success/failure/interruption.
-- Redirect/host/path/size/timeout/disk/concurrency/metadata/API/syntax/self-test/status failures reject or roll back with no partial active file.
+- Pure state-machine tests assert intended active/candidate/LKG transitions and rejection decisions for redirect/host/path/size/metadata/API/syntax/self-test/status outcomes.
+- Disk, filesystem atomicity, process concurrency, interruption, curl timeout/redirect execution, activation, and rollback are Phase 9 integration checks.
 - RPC fuzz tests reject unknown fields/paths and never return source containing credentials or arbitrary command output.
 
-Gate: no-update, valid update, downgrade, bad syntax/API, timeout, redirect, low-space, concurrency, interrupted activation, failed status, and rollback tests pass. No package file is updated.
+Gate: backend compiles/lints; pure input-validation and state-transition tests cover no-update, valid update, downgrade approval, bad syntax/API, redirect policy, failed validation/status decisions, and rollback selection. No network or package file is updated.
 
 ### Phase 6 — LuCI script manager
 
@@ -318,7 +335,7 @@ Organize LuCI into Overview, Configuration, Network, Scripts, and Diagnostics. R
 
 - Backend implementation subagent owns RPC envelope, password handling, ownership markers/journal, and recovery command.
 - UI implementation subagent owns navigation/page organization and shared empty/loading/error components; file ownership must not overlap backend work.
-- Test subagent owns secret-taint tests, ACL negative tests, JSON/input fuzzing, transaction failure injection, and reboot recovery simulation.
+- Test subagent owns secret-taint tests, ACL negative/static tests, JSON/input fuzzing, and pure ownership/journal transition tests. It does not emulate UCI/network/firewall/mwan3 commits or reboot recovery.
 - Keep passwords write-only: blank means unchanged for an existing account; browser reads return only `password_set`; action output is allowlisted/redacted.
 - Replace prefix-based deletion with exact ownership records. Snapshot affected UCI sections, journal each stage, commit/reload in order, and recover/roll back after reboot.
 - Narrow ACL to the exact UCI/RPC/init/log operations required; no broad filesystem script write and no arbitrary `file` exec/read/write.
@@ -326,15 +343,15 @@ Organize LuCI into Overview, Configuration, Network, Scripts, and Diagnostics. R
 
 **Acceptance and verification**
 
-- Sentinel credentials never appear in browser fixtures, RPC/stdout/stderr, logs, process listings, temp paths/content after cleanup, or committed files.
+- Sentinel credentials never appear in browser/RPC serialization fixtures, generated argv/log payload logic, diagnostics, or committed files. Actual process listings, service logs, and temp cleanup are Phase 9 checks.
 - Negative ACL tests deny direct file/script access and unrelated UCI/ubus operations while all pages retain required functionality.
-- Transaction tests preserve non-owned objects byte-for-byte and restore a consistent state after failure/reboot at every journal stage.
+- Pure planner/reducer tests prove non-owned object IDs are never selected and each journal state has a defined recovery decision; actual UCI commit/reload and reboot recovery are Phase 9 checks.
 
-Gate: browser/RPC/log output has no secrets; non-owned network objects are untouched; interrupted network transactions recover after reboot; all pages have empty/loading/error states.
+Gate: browser/RPC/log fixtures have no secrets; ACL and ownership-selection logic exclude unrelated objects; journal transitions are total; all pages have empty/loading/error states. Real network mutation and reboot recovery are deferred.
 
 ### Phase 8 — Build and release automation
 
-Complete PR CI, reusable OpenWrt 23.05/24.10 SDK builds, package lifecycle tests, script-version gates, release checks, checksums, changelog validation, and approved GitHub Releases. Snapshot builds remain non-blocking.
+Complete PR CI, reusable OpenWrt 23.05/24.10 SDK compilation, script-version gates, artifact metadata checks, checksums, changelog validation, and approved GitHub Releases. Snapshot builds remain non-blocking.
 
 **Pre-phase investigation**
 
@@ -346,19 +363,19 @@ Complete PR CI, reusable OpenWrt 23.05/24.10 SDK builds, package lifecycle tests
 
 - CI implementation subagent owns PR/lint/unit workflows and reusable SDK build workflow.
 - Release implementation subagent owns version/checksum/changelog/release workflows and does not publish anything.
-- Test subagent owns workflow static checks, local lifecycle simulation, artifact inspection scripts, and version-matrix expected failures.
-- CI runs the single offline test command, JSON/JS/shell validation, secret scanning, migration/lifecycle tests, and supported SDK builds with pinned/minimal permissions.
+- Test subagent owns workflow static checks, read-only artifact inspection scripts, pure version-matrix expected failures, and compile evidence. It does not simulate install/uninstall/upgrade/downgrade.
+- CI runs the bounded offline compile/static/pure-logic command, secret scanning, and supported SDK builds with pinned/minimal permissions.
 - Release checks require tag/Makefile/script metadata/changelog/artifact names/checksums to agree; RC is `v3.0.0-rc.1` and stable is `v3.0.0`.
 - Shell-only changes validate and may update only the fixed Raw script on `main`; they do not claim an IPK update. Package/API changes require the full release gate.
 - Publishing, branch push, tags, GitHub environments, and Releases are manual-authority operations. Workflows may be created and tested but are never dispatched/published unattended.
 
 **Acceptance and verification**
 
-- Local/static workflow validation passes and package files install/uninstall/upgrade/downgrade correctly in simulated rootfs.
+- Local/static workflow validation and both supported SDK compilations pass; artifact inspection verifies declared files, modes encoded in the archive, dependencies, versions, and checksums without installing the package.
 - Supported SDK builds use reproducibly identified cached SDK inputs or safely downloaded SDKs. If a required SDK cannot be obtained or executed after bounded retries, Phase 8 is `blocked`; this is not a `DEFERRED-MANUAL` gate item.
 - Artifact inspection proves file list/modes/dependencies/versions and checksums; intentionally mismatched metadata fails.
 
-Gate: supported SDK packages build and install in a simulated rootfs; tag, Makefile, artifacts, and notes agree; shell-only changes pass their dedicated gate without requiring an IPK release.
+Gate: supported SDK packages compile; read-only artifact metadata, tag, Makefile, checksums, and notes agree; shell-only changes pass their dedicated compile/static/logic gate without requiring an IPK release. Install behavior remains Phase 9 manual coverage.
 
 ### Phase 9 — RC device acceptance
 
@@ -367,7 +384,7 @@ Test fresh install, stock/custom upgrade, service-state preservation, single/mul
 **Pre-phase investigation**
 
 1. Prepare an operator checklist with device model/OpenWrt/mwan3 versions, backup/restore steps, isolated test accounts, WAN mapping, evidence paths, abort thresholds, and rollback commands.
-2. Reconcile every `DEFERRED-MANUAL` item from Phases 2, 5, and 8; no item may disappear from the checklist.
+2. Reconcile every `DEFERRED-MANUAL` platform/integration item from Phases 2–8, especially portal/device execution, opkg lifecycle, service restoration, update activation/rollback, network ownership/recovery, and installed artifact behavior; no item may disappear from the checklist.
 3. Verify RC artifact/checksum/signature offline and require explicit approval for install, network mutation, portal actions, reboot, downgrade, push/tag/release, and credential use.
 
 **Detailed tasks and ownership**
@@ -380,10 +397,11 @@ Test fresh install, stock/custom upgrade, service-state preservation, single/mul
 **Acceptance and verification**
 
 - Every matrix cell records environment, precondition, action, expected/actual result, timestamp, redacted evidence, cleanup, and defect link.
+- Every `DEFERRED-MANUAL` item reconciled from Phases 2–8 must be executed and record `PASS`. A skipped, untested, or failed required integration cell blocks RC acceptance unless the user first approves an explicit plan/contract change removing that requirement.
 - Soak monitoring has explicit duration, retry-storm threshold, secret scan, service/resource health checks, and rollback verification.
 - No stable tag/release is created until the user accepts device evidence and explicitly authorizes publication.
 
-Gate: the RC completes the soak period without login storms, secret leaks, P0/P1 defects, migration loss, or failed rollback. Then publish `v3.0.0`.
+Gate: every deferred integration cell passes, and the RC completes the soak period without login storms, secret leaks, P0/P1 defects, migration loss, or failed rollback. Then publish `v3.0.0`.
 
 Gate interpretation: the Phase 9 gate ends at documented RC acceptance. The original “Then publish” sentence describes the next release action, not pre-authorization; pushing, tagging, or publishing `v3.0.0` occurs only after a separate explicit user authorization.
 
@@ -400,7 +418,7 @@ The unattended executor must stop before, but only before, the following actions
 - pushing a branch, opening/merging a PR, creating a tag, dispatching a privileged workflow, or publishing a GitHub Release;
 - destructive cleanup outside a test root or any step that risks losing management access.
 
-Allowed unattended work includes local branches/commits, offline mocks/fixtures, simulated rootfs/package lifecycle, local HTTP servers, source downloads/build caches that do not mutate external services, and read-only repository inspection. For this run, even real read-only portal/device checks are deferred to Phase 9 because the user required portal work to remain fixture/mock-only.
+Allowed unattended work includes local branches/commits, compile/lint/static analysis, redacted protocol fixtures, pure-logic unit tests, narrow argv/stdin capture stubs, SDK compilation, read-only artifact inspection, source downloads/build caches that do not mutate external services, and read-only repository inspection. Simulated router rootfs/package/service/network/reboot behavior and local HTTP emulation are not part of unattended acceptance. Even real read-only portal/device checks are deferred to Phase 9.
 
 ## Decision log
 
@@ -409,22 +427,25 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | D-001 | Keep scheduling/backoff in package-managed `login_control.bash`. | Remote shell updates must not change product scheduling or multi-instance policy. | Fixed |
 | D-002 | Update only unified `cqu-portal.sh` from the fixed Raw URL. | Shell protocol fixes can ship independently without turning Raw into a package updater. | Fixed |
 | D-003 | Use staged validation, explicit activation, LKG, and automatic rollback. | Remote/custom root code must never overwrite the active script directly. | Fixed |
-| D-004 | Use offline fixtures/mocks through Phase 8; defer all real device/portal checks. | Current authorization explicitly prohibits real portal and device mutation. | All |
+| D-004 | Use redacted protocol fixtures and host-independent logic inputs through Phase 8; defer all real device/portal checks. | Current authorization explicitly prohibits real portal and device mutation. | All |
 | D-005 | Preserve the exponential-backoff policy but harden its implementation and add bounded jitter. | Existing product behavior remains recognizable while preventing unsafe argv/eval/temp handling and synchronized retries. | 3 |
 | D-006 | Treat `ok` as a trustworthy action result rather than “online”; offline status and already-online are non-error outcomes despite exits 1/2. | Exit codes preserve CLI state semantics while JSON can distinguish valid state from auth/transport failure. | 2 |
 | D-007 | Preserve non-empty account usernames end to end, including spaces and UTF-8, while rejecting control characters at the action boundary. | The frozen UCI contract defines username as a preserved non-empty string; identifier-only validation silently broke valid legacy data. | 3 |
 | D-008 | Portal argument parsing uses shell builtins only until production PATH sanitization and dependency checks complete. | Ambient executables must not cross the pre-validation trust boundary or change dependency failures into argument failures. | 3 |
+| D-009 | Install the portal core as a package-owned factory copy; initialize but do not package-own the active `/etc` copy. | Later package upgrades must not overwrite a validated Raw/Custom active script, while fresh install and restore still have an immutable factory source. | 4 |
+| D-010 | Limit unattended gates to compile/static/artifact checks and pure product logic; do not emulate OpenWrt, opkg, services, router rootfs, network state, or reboot. | High-fidelity host simulation costs more than it proves; end-to-end platform behavior belongs on the real Phase 9 device matrix. | All |
 
 ## Progress log
 
 | Phase | State | Evidence / commit | Review | Decisions / remaining risks |
 | --- | --- | --- | --- | --- |
 | Plan | accepted | Repository, portal profile, and existing plan inspected on 2026-07-31. Initial review returned `BLOCK`; four gate/durability ambiguities were corrected. | Independent reviewer `/root/plan_review`: `PASS`. | Plan is tracked and committed before Phase 0. |
+| Plan scope | accepted | 2026-08-01 user-directed validation reduction: unattended gates now contain only compile/static/artifact checks, pure product logic, and narrow stdin/argv security stubs; the default runner must exclude platform simulations and stay within a 60-second non-SDK budget. | Terra `/root/phase3_controller` first returned `BLOCK` for three residual process/mock/manual-gate contradictions; all were corrected and rereview returned `PASS`. | D-010 added. Every platform integration claim is deferred to Phase 9 and every deferred matrix item must pass before RC acceptance. |
 | 0 | accepted | 2026-07-31; main agent, `/root/phase0_baseline`, `/root/phase0_audit`; accepted content commit `b4fe21e66d0337839788e75e8392f77e922f329d`. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit final `PASS`; independent reviewer `/root/phase0_review` found and verified the Phase 3 rpcd-launcher ordering fix, then returned `PASS`. | ShellCheck and BusyBox unavailable locally; mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation remain Phase 9 manual items. |
-| 1 | accepted | 2026-07-31; main agent, `/root/phase1_tests`, `/root/phase1_ci`; accepted content commit `f0ebfe2e88181178edfef682a9f977e36f7dfc77`. Local `14 PASS/3 SKIP`; required BusyBox/ShellCheck/shfmt mode final `18 PASS/0 SKIP`; missing-tool CI negative, all intentional bad cases, workflow full-history/pins/permissions, and diff checks passed. | `/root/phase1_review` blocked shallow checkout and incomplete future lint scope; fixes were rerun and reviewer returned `PASS`. | Generic mocks must be extended, not weakened. All shell files changed from the v2 baseline automatically enter lint. |
+| 1 | accepted | 2026-07-31; main agent, `/root/phase1_tests`, `/root/phase1_ci`; accepted content commit `f0ebfe2e88181178edfef682a9f977e36f7dfc77`. Local `14 PASS/3 SKIP`; required BusyBox/ShellCheck/shfmt mode final `18 PASS/0 SKIP`; missing-tool CI negative, intentional bad cases, workflow full-history/pins/permissions, and diff checks passed. | `/root/phase1_review` blocked shallow checkout and incomplete future lint scope; fixes were rerun and reviewer returned `PASS`. | Historical mocks remain evidence for accepted phases but must not be expanded into OpenWrt/platform emulation after D-010. All shell files changed from the v2 baseline automatically enter lint. |
 | 2 | accepted | 2026-07-31; `/root/phase2_script` and Luna `/root/phase2_tests_luna`; accepted content commit `8b31696fd78857b6ff63f04d1c09082a9e70c560`. Direct offline version/self-test and required BusyBox/ShellCheck/shfmt runner passed (`19 PASS/0 SKIP`); portal groups cover strict CLI, PC/mobile, exact config/UA, stdin secret framing, ret-code race, classification, IPv4/IPv6, logout precedence/bounds, identity ambiguity, signals, and concurrency. | Independent Terra reviewer `/root/phase2_review`: `PASS`. | Real read-only status/login/logout remain `DEFERRED-MANUAL` to Phase 9; no real portal/device action occurred. |
 | 3 | accepted | 2026-07-31–2026-08-01; main agent, controller/RPC implementation agents, Luna test agents; accepted content commit `00758c789812ac7ab196a4658062fe063cc985ac`. Changed the package controller, unified-script account validation, three rpcd action launchers, unsafe-pattern allowlist/runner, and offline portal/controller/RPC tests. Required command `PATH=/tmp/multilogin-phase1-tools.pcM2io/root/usr/bin:$PATH CI=1 MULTILOGIN_REQUIRE_TOOLING=1 ./tests/run.sh` passed `21/21`, `0` skips; sub-suites passed portal `9`, controller `18`, and executable RPC `13`. Timing evidence covers exact `8/16/32`, no early retry, cap-before-jitter at `15/17`, success/interface reset, and multi-instance isolation; syntax/lint/format/safety/baseline/expected-failure/signal/secret/diff checks passed. | Terra `/root/phase3_review` first returned `BLOCK` for ambient `awk` before PATH/dependency validation. D-008 plus BusyBox/empty-PATH regression resolved it; rereview returned `PASS` and confirmed no code-testable gate was deferred. | D-007/D-008 added. Real portal/device checks remain `DEFERRED-MANUAL` to Phase 9; no real credential, portal, service, network, or device action occurred. |
-| 4 | pending | Not started. | — | — |
+| 4 | investigating | Started 2026-08-01 at baseline `06453b5`; main agent, Terra production workers/reviewers, and Luna test workers. Migration/wrapper/package code exists and prior high-fidelity simulated-rootfs suites reached `22/22`, but on 2026-08-01 the user rejected OpenWrt/opkg/rootfs emulation as wasteful. D-010 now replaces that gate with compile/static/pure-logic verification; the existing simulation is historical diagnostic evidence only and must be removed from the required runner or reduced to host-independent logic before Phase 4 review resumes. | Two earlier reviews exposed real source-ordering/lock/archive defects, which were fixed. A new review is required against the revised D-010 scope; no previous lifecycle-simulation verdict can accept Phase 4. | D-009/D-010 added. Real install/upgrade/downgrade, service restoration, interruption recovery, and file modes as applied by opkg are Phase 9 manual checks. |
 | 5 | pending | Not started. | — | Real post-activation status deferred. |
 | 6 | pending | Not started. | — | Subjective UX acceptance remains manual. |
 | 7 | pending | Not started. | — | — |

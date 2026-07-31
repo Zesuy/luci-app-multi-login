@@ -92,7 +92,7 @@ cqu-portal.sh version
 cqu-portal.sh self-test
 ```
 
-Unknown options, missing option values, extra positional arguments, and invalid `ua_type` are v3 exit-`4` errors. This deliberately tightens v2, whose parsers silently ignore unknown/extra arguments, treat invalid UA as mobile, and may let a missing option value fail at `shift 2` with shell exit `2`. Production endpoint/host/port/timeout values are not CLI parameters. Tests may inject commands, fixtures, clock, and temp root only when an explicit test-mode environment switch is set; production rejects those overrides.
+Unknown options, missing option values, extra positional arguments, and invalid `ua_type` are v3 exit-`4` errors. This deliberately tightens v2, whose parsers silently ignore unknown/extra arguments, treat invalid UA as mobile, and may let a missing option value fail at `shift 2` with shell exit `2`. Production endpoint/host/port/timeout values are not CLI parameters. Production rejects test overrides. Existing explicit test-mode command/temp/clock injection is historical non-gating diagnostic support; it must not be expanded or used to claim OpenWrt integration.
 
 `login` reads exactly one password line from standard input using `IFS= read -r`; the trailing newline is framing and is not part of the password. Empty and NUL-containing passwords are unsupported. `status`, `logout`, `version`, and `self-test` never read or require a password.
 
@@ -147,14 +147,14 @@ This preserves existing status/login meanings for `0`, `1`, `2`, and local error
 
 ## 5. Portal protocol contract
 
-The dated local profile is authoritative until a newer, verified capture is explicitly accepted. Through Phase 8, all requests are verified with redacted fixtures and command mocks only.
+The dated local profile is authoritative until a newer, verified capture is explicitly accepted. Through Phase 8, protocol parsing, serialization, and classification are verified with redacted fixtures and host-independent logic only; device commands and request execution are Phase 9 checks.
 
 - Base API is `https://login.cqu.edu.cn:802`; redirects are not part of the portal action contract. Status requests use `jsVersion=4.X`; login/logout requests use `jsVersion=4.2.2`.
 - Status calls `/eportal/portal/online_list` with callback, empty `user_account`/`user_password`, uppercase MAC, Base64 IPv4/IPv6, cache value `v`, and `lang=zh`. `result=0` is offline; `result=1` is online. `list[].phone_flag=0` is PC and `1` is mobile.
 - Login calls `/eportal/portal/login` with `login_method=1`, `user_account=,<operator>,<account>`, password, plain IPv4/IPv6/MAC, empty AC fields, UA/terminal fields, callback/cache fields, `lang=zh-cn`, and the portal helper's second `lang=zh`. PC uses operator/term/terminal `0/1/1`; mobile uses `1/2/2`.
 - The PC UA is `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36`. The mobile UA is `Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36`. The HTTP `User-Agent` header byte-for-byte equals `term_ua`.
 - A mode-0600 curl config holds all space-bearing and secret values. The only mwan3 wrapper argv is `mwan3 use "$interface" curl --config "$config"`; password and UA never appear in process argv.
-- Login success is not complete until status polling (five attempts, one second apart) observes the requested `phone_flag`. Online with the wrong flag exits `8`; never becoming online is a protocol failure. Tests replace sleep/clock.
+- Login success is not complete until status polling (five attempts, one second apart) observes the requested `phone_flag`. Online with the wrong flag exits `8`; never becoming online is a protocol failure. Pure logic cases supply polling observations directly; automated acceptance does not replace runtime sleep/clock behavior.
 - Logout is idempotent: if initial status is offline, return `0/already_offline`. Otherwise call `/eportal/portal/mac/unbind` with account, `wlan_user_mac=000000000000`, plain IPv4, resolved IPv6 or `::`, callback/cache/language fields; then call `/eportal/portal/custom/checkLogout` with plain addresses and action metadata; then poll `online_list` up to ten times, one second apart. Attempt checkLogout and polling even if unbind returns a negative/transport result. Do not start a replacement login before offline is confirmed.
 
 When `online_list` has multiple records, filter by exact normalized local MAC when the response exposes MAC, then by exact local IP when it exposes IP. After all available identity filters, exactly one record must remain; zero or multiple records are a protocol error. If identity fields are absent, only a single-record list is accepted. A login precheck that finds the requested `phone_flag` returns `2/already_online`; the wrong flag returns `8/classification_mismatch` and never logs out or replaces the session automatically.
@@ -175,7 +175,7 @@ Logout result precedence is fixed:
 | v2 logout calls `checkLogout` before unbind, uses the actual MAC, and never polls offline. | Captured order, zero MAC for unbind, and bounded polling as specified above. |
 | `login_A.sh` uses obsolete HTTP/801 and an old status host. | Retire the stock template; never activate it automatically. |
 
-Fixture tests freeze parameter names, duplicate `lang` behavior where required, JSONP stripping, Base64, UA equality, classification, and asynchronous logout timing. Random callback/cache values and sleeps are injected deterministically in test mode.
+Pure fixture/serializer tests freeze parameter names, duplicate `lang` behavior where required, JSONP stripping, Base64, UA equality, classification, and polling decision bounds. They supply deterministic callback/cache inputs directly and do not emulate runtime clocks or sleeps.
 
 ## 6. Controller/backoff contract
 
@@ -264,7 +264,7 @@ Default mode is Managed. State mutations are locked, generation-numbered, journa
 
 - Raw source is fixed to `https://raw.githubusercontent.com/Zesuy/luci-app-multi-login/main/etc/multilogin/cqu-portal.sh`.
 - Check/stage never activates or executes candidate code. Stage enforces HTTPS, exact host/repository/branch/path, redirect policy, byte/time limits, free space, regular-file rules, static API/version metadata, SHA-256, and `sh -n`.
-- No enforceable shell sandbox is assumed on supported OpenWrt. `script_validate` therefore treats candidate/custom `self-test` as execution of arbitrary root code: it requires an explicit root-code warning/confirmation, `confirm_execute=true`, and the exact staged hash/generation. In unattended development the executable is a mock/fixture; execution on a real device is a Phase 9/manual-boundary action. A syntax-only candidate remains `staged`, not `validated`.
+- No enforceable shell sandbox is assumed on supported OpenWrt. `script_validate` therefore treats candidate/custom `self-test` as execution of arbitrary root code: it requires an explicit root-code warning/confirmation, `confirm_execute=true`, and the exact staged hash/generation. Unattended development verifies only syntax, metadata, and the validation decision logic; executable validation is a Phase 9/manual-boundary action. A syntax-only candidate remains `staged`, not `validated`.
 - Activate is always an explicit RPC action originating from a second user confirmation and accepts only a hash-matched `validated` candidate/draft. It snapshots active to LKG, writes the journal, atomically replaces active, rechecks version/self-test and status when an instance is available, then commits state. Failure automatically restores LKG.
 - Managed downgrade (candidate version lower than active) requires an explicit `allow_downgrade=true` confirmation plus a matching expected candidate hash; it is never automatic.
 - Restore copies the package factory script through the same validation/activation transaction. Rollback copies LKG through that transaction.
@@ -299,7 +299,7 @@ Migration states are `prepared`, `unpacked`, `classified`, `installed`, `service
 
 ### 9.3 Supported downgrade
 
-The sole supported v2 downgrade target is `luci-app-multilogin 2.2.0-4` built from source commit `fb272e8285c65415dea8a9a359a4204b94be06a0`. No baseline IPK or matching tag exists in the repository, so Phase 0 pins source identity rather than claiming a nonexistent binary SHA. Phase 4 tests the lifecycle with the pinned source tree; Phase 8 records the reproducible artifact name and SHA-256, which becomes mandatory input to Phase 9.
+The sole supported v2 downgrade target is `luci-app-multilogin 2.2.0-4` built from source commit `fb272e8285c65415dea8a9a359a4204b94be06a0`. No baseline IPK or matching tag exists in the repository, so Phase 0 pins source identity rather than claiming a nonexistent binary SHA. Phase 4 verifies the pinned hashes, hooks, and migration decision logic without emulating opkg; Phase 8 records the reproducible artifact name and SHA-256; Phase 9 performs the real lifecycle check.
 
 V3 marks `/etc/config/multilogin` as a conffile and also copies it, modes, script state, and independent init-enabled/daemon-running flags into `/etc/multilogin/.migration-v3/downgrade-state/` before downgrade unpack. That root-only runtime directory is not a package-owned path and survives replacement by v2.
 
@@ -335,9 +335,9 @@ V2 declares only `+curl +bash` although production code also requires mwan3/json
 | Unconditional upgrade enable / no migration | Snapshot, classify, idempotently migrate, restore state. | 4 |
 | Placeholder stock account/instance | Remove on fresh v3 install; preserve all upgrade sections. | 4 |
 | Missing menu icon and incomplete runtime dependencies | Install/remove icon consistently and declare verified dependencies. | 7, 8 |
-| No tests/CI/release validation | Offline harness, CI, SDK/lifecycle/release gates. | 1, 8 |
+| No tests/CI/release validation | Bounded compile/static/pure-logic CI, SDK compilation, artifact metadata, and release-consistency gates. | 1, 8 |
 | Obsolete docs and secret-bearing examples | Rewrite to actual v3 flows without credentials. | 7 |
 
 ## 11. Human-only acceptance
 
-No Phase 0–8 test uses a real portal/credential/device or mutates a real router's firewall, network, mwan3, service, package, or reboot state; it also does not push/tag/release or execute/activate candidate root code on a device. Simulated service state, rootfs package install/upgrade/downgrade, command mocks, and local HTTP fixtures are mandatory automated tests. Real read-only status, login/logout, install/upgrade/downgrade, Raw validation/activation/rollback, network journal recovery, and soak testing remain Phase 9 checklist items requiring explicit authorization.
+No Phase 0–8 test uses a real portal/credential/device or mutates a real router's firewall, network, mwan3, service, package, or reboot state; it also does not push/tag/release or execute/activate candidate root code on a device. Automated acceptance is limited to compile/lint/static analysis, read-only artifact inspection, redacted protocol fixtures, pure product logic, and narrow argv/stdin security stubs. OpenWrt/opkg/service/rootfs/network/reboot and local-HTTP emulation are not acceptance gates. Real read-only status, login/logout, install/upgrade/downgrade, Raw validation/activation/rollback, network journal recovery, and soak testing remain Phase 9 checklist items requiring explicit authorization; every deferred item must execute and pass before RC acceptance unless the user explicitly changes this contract first.
