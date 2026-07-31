@@ -34,6 +34,7 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `/etc/multilogin/login_control.bash` | `0755` | Package-managed controller. |
 | `/etc/multilogin/cqu-portal.sh` | `0755` | Atomic active portal script; updateable. |
 | `/usr/lib/multilogin/cqu-portal.factory.sh` | `0755` | Package-managed factory copy used by restore; never updated from Raw. |
+| `/usr/libexec/multilogin-script` | `0755` | Package-managed script-state backend/helper; exposes fixed internal `recover` mode to init and fixed RPC operations to the rpcd handler. |
 | `/etc/multilogin/login.sh` | `0755` | Package-managed login compatibility wrapper. |
 | `/etc/multilogin/check_status.sh` | `0755` | Package-managed status compatibility wrapper. |
 | `/etc/multilogin/logout.sh` | `0755` | Package-managed logout compatibility wrapper. |
@@ -227,7 +228,7 @@ Every v3 method returns one object:
 {"ok":true,"code":"ok","message":"","data":{}}
 ```
 
-Failures set `ok=false`, use a stable lower-snake-case `code`, provide a bounded non-secret `message`, and return an object `data`. No method returns arbitrary command stdout/stderr, a password, full UCI account objects, raw portal bodies, file paths supplied by a client, or script content except the explicitly requested active/draft source in the Scripts page.
+Failures set `ok=false`, use a stable lower-snake-case `code`, provide a bounded non-secret `message`, and return an object `data`. No method returns arbitrary command stdout/stderr, a MultiLogin account password, full UCI account objects, raw portal bodies, file paths supplied by a client, or script content except the explicitly requested Custom draft returned by `script_get_draft`.
 
 ### 7.3 New fixed method families
 
@@ -239,6 +240,84 @@ Exact method names are reserved now; detailed data schemas are frozen in the own
 - Owned network recovery (Phase 7): `network_recover` in addition to preserved quick-setup methods.
 
 Script methods accept no URL or arbitrary path. `script_activate` identifies only the server-side `candidate` or validated `custom` source and requires its expected SHA-256/base generation. `service_action` allowlists `start`, `stop`, `restart`, `enable`, and `disable` for `multilogin` only.
+
+#### 7.3.1 Phase 5 script RPC schemas
+
+All Phase 5 parameters are members of one JSON object and unknown fields are rejected. `expected_generation` is a non-negative integer, hashes are lowercase SHA-256, and booleans are JSON booleans. A successful mutation increments `generation` exactly once; a rejected operation does not change durable state.
+
+| Method | Exact parameters | Success `data` |
+| --- | --- | --- |
+| `script_info` | none | Keys `raw_url`, `generation`, `mode`, `recovery_required`, `active`, `factory`, `candidate`, `last_known_good`, `custom`, and `preserved`; the last six are exact summaries. No script source. |
+| `script_check` | none | Keys `available`, `downgrade`, `relation`, `active_sha256`, and `remote` (exact summary). It downloads to an ephemeral file for static inspection only and never stages or executes it. |
+| `script_stage` | `expected_generation` | Keys `generation` and `candidate` (Raw summary with status `staged`, or its unchanged current status for `no_change`). |
+| `script_validate` | `source` (`candidate` or `custom`), `expected_sha256`, `expected_generation`, `confirm_execute` | Keys `generation`, `source`, `summary`, and `validation={"self_test":"passed"}`. The summary status is `validated`; `confirm_execute` must be literal true. |
+| `script_activate` | `source` (`candidate` or `custom`), `expected_sha256`, `expected_generation`, `confirm_activate`, `allow_downgrade` | Keys `generation`, `mode`, `active`, and `validation`. `confirm_activate` must be true. `allow_downgrade` is consulted only for a lower-version managed candidate and has no effect for Custom. |
+| `script_rollback` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode`, `active`, and `validation`. `expected_sha256` names the current LKG shown by `script_info`. |
+| `script_restore` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode` (`managed`), `active`, and `validation`. `expected_sha256` names the immutable factory shown by `script_info`. |
+| `script_get_draft` | none | Keys `generation`, `source="draft"`, `summary`, and `content`. A missing draft returns `not_found`. This is the only source-reading RPC; active and migration-preserved executable content is never returned to the browser. |
+| `script_save_draft` | `content`, `base_sha256`, `expected_generation` | Keys `generation` and `custom` (status `draft`, or unchanged `validated` for byte-identical `no_change`). Changed content invalidates earlier validation. Empty `base_sha256` is accepted only when no draft exists. |
+| `script_discard_draft` | `expected_sha256`, `expected_generation` | Keys `generation` and `custom`, which is the exact absent summary. It never removes `custom.preserved.sh`. |
+
+Every summary always has exactly these fields:
+
+```json
+{"present":true,"status":"active","source":"raw","mode":"managed","version":"3.0.0","api":3,"sha256":"<64 lowercase hex>"}
+```
+
+Absent summaries use `present=false`, `status=none`, `source=unknown`, `mode=none`, `version=""`, `api=0`, and `sha256=""`. Source is `factory`, `raw`, `custom`, or `unknown`; mode is `managed`, `custom`, or `none`. Active status is `active`; factory, remote, preserved, and LKG status are `available`; candidate status is `none`, `staged`, or `validated`; Custom status is `none`, `draft`, or `validated`. A successful `script_check` always returns a present remote summary with `status=available`, `source=raw`, and `mode=managed`; transport or static rejection returns a failure envelope rather than a partial remote summary.
+
+The exact activation/rollback/restore validation object is:
+
+```json
+{"self_test":"passed","status":"online|offline|skipped_no_instance"}
+```
+
+Self-test runs through `/bin/sh SCRIPT self-test`, is terminated after 10 seconds, and must emit at most 8 KiB containing exactly one JSON object with `ok=true`, `action=self-test`, `outcome=self_test_pass`, API `3`, and the statically parsed version. No child output is returned. Post-activation status selects the lexicographically first enabled instance having a valid interface; it passes no password and accepts only exit/envelope pairs `0/online/ok=true` or `1/offline/ok=true` with matching API/version. No usable instance yields `skipped_no_instance`; any other result fails activation.
+
+Durable `state.json` has exactly `schema=1`, `generation`, `mode`, `active`, `candidate`, `last_known_good`, and `custom`; each nested value is an exact summary above. Factory and preserved summaries are computed read-only from their fixed files. Script source, URL, credentials, diagnostics, and validation output never enter state. If state is absent, read methods synthesize generation `0` without writing; the first successful mutation atomically creates generation `1`.
+
+The activation journal contains exactly the keys `schema` (`1`), `generation` (starting generation), `operation` (`activate`, `rollback`, or `restore`), `source` (`candidate`, `custom`, `last_known_good`, or `factory`), `selected_sha256`, `previous_active` (exact summary), `backup_sha256`, and `state` (`prepared`, `active_replaced`, `verified`, or `rollback_required`). The previous active is first copied to a transaction backup, not directly to LKG. On successful normal activation/restore, that previous active becomes LKG; on successful rollback, active and LKG swap so a second rollback can undo the first. Mode/source metadata move with their bytes.
+
+The package-managed init path invokes `/usr/libexec/multilogin-script recover` under the script lock before starting `login_control.bash`; every script RPC invokes the same internal recovery routine before serving its request. `recover` accepts no other argument or input and returns `0` only when no recovery remains, otherwise `1`; it emits no script content or child output. Recovery never executes candidate, Custom, or active code. For `prepared` with the starting generation still current and the prior active hash intact, it removes the unused transaction backup and journal. For `active_replaced`, `verified`, or `rollback_required` with the starting generation still current, it restores the transaction backup and prior active mode/source metadata, fsyncs the restored active, then removes the backup and journal. If durable state is already exactly generation `starting+1` and matches the selected active hash, recovery treats the transaction as committed and removes only the stale backup/journal. Any other generation/hash combination, missing/mismatched backup, or failed restore keeps the journal and backup and requires recovery.
+
+`script_info` remains available when recovery cannot complete and reports `recovery_required=true` with the unchanged durable generation. Its active summary describes the actual active file bytes; if those bytes match neither the durable active nor the journal-selected hash, the summary uses `source=unknown` and `mode=none`. All other script methods fail before downloading, reading draft content, executing, or writing with `code=recovery_required` and `data={"generation":CURRENT}`. After successful recovery, `script_info` reports false and the original request may continue. The init service refuses to start the controller while recovery remains required; an operator may repair the retained backup/journal through root shell access and rerun the fixed `recover` command, but no browser RPC accepts a recovery path or source. Recovery does not increment generation because it either removes an uncommitted transaction or finishes restoring its starting state.
+
+Every mutation checks `expected_generation` before any write. Hash-bearing operations then check the selected current hash. `conflict` returns only `data={"generation":CURRENT,"sha256":CURRENT_SELECTED_HASH}`. A malformed request, stale generation/hash, missing confirmation, or invalid state changes no file. If activation validation fails, the transaction backup restores the exact prior active and leaves generation, state, LKG, candidate, and Custom validation unchanged; the journal is removed after successful restoration. If restoration itself fails, state/generation/LKG still remain unchanged, the backup and `rollback_required` journal remain, and `activation_failed` returns `data={"generation":CURRENT,"recovery_required":true}`.
+
+Exact repeated-operation rules are:
+
+- staging bytes already held as candidate returns success `code=no_change`, preserves `staged` or `validated`, returns the current method data schema, and does not increment generation;
+- validating an already validated matching source returns `no_change` without executing it again;
+- activating the same active hash, source, and mode returns `no_change` without rotating LKG;
+- saving byte-identical draft content returns `no_change` and preserves prior validation; otherwise save sets `draft`;
+- rollback/restore to the identical active hash/source/mode returns `no_change` without rotating LKG;
+- discard or read of an absent draft returns `not_found`.
+
+Success codes are `ok` and `no_change`. Stable failure mapping is:
+
+| Code | Condition | Failure `data` |
+| --- | --- | --- |
+| `invalid_request` | malformed JSON, unknown field, wrong type/enum, invalid hash/generation, empty/oversized/non-text draft | `{}` |
+| `conflict` | current generation or selected/base hash differs | current generation and selected hash only |
+| `not_found` | requested candidate, LKG, factory, or draft is absent | `{}` |
+| `invalid_state` | source exists but is not in the required staged/validated state | `{}` |
+| `download_failed` | DNS/TLS/transport/timeout, size overflow, or a non-redirect non-200 status | `{}` |
+| `source_rejected` | any HTTP redirect/effective URL mismatch, unsafe file, metadata/API/SemVer/syntax rejection | `{}` |
+| `confirmation_required` | required execute/activate/downgrade confirmation is false | `{}` |
+| `validation_failed` | self-test timeout, size, exit, envelope, API, version, or outcome failure | `{}` |
+| `activation_failed` | post-replacement validation/status or restoration failure | generation plus `recovery_required` boolean |
+| `recovery_required` | retained activation journal cannot be safely recovered automatically | current generation only |
+| `internal_error` | bounded local error not classified above | `{}` |
+
+Messages are bounded, non-secret English diagnostics; callers branch on `code`, not text.
+
+Managed downgrade means only `script_activate` of a Raw candidate whose valid SemVer is below the valid active SemVer; it requires `allow_downgrade=true`. Equal-version/different-hash Raw content is not a downgrade. Custom activation does not compare versions. Rollback and factory restore may lower a version without `allow_downgrade` because their fixed method, expected source hash, generation, and activation confirmation are the explicit authorization.
+
+`script_check` and `script_stage` always use the fixed Raw URL and disable redirect following. Any HTTP 3xx is `source_rejected`; DNS/TLS/transport/timeout, size overflow, and every other non-200 status are `download_failed`. A successful response must be HTTP 200 with an effective URL byte-identical to the fixed URL. Downloads are HTTPS-only, bounded to 256 KiB, and subject to 8-second connect and 20-second total timeouts. Static acceptance requires a regular non-symlink file, non-empty valid UTF-8 without U+0000, anchored literal API `3` and SemVer version metadata, SHA-256, and `sh -n`; candidates are never sourced. `available` means the remote hash differs from active. `relation` is `identical`, `newer`, `older`, `same_version_changed`, or `unknown`; unknown/invalid active metadata yields `unknown` and `downgrade=false`.
+
+Custom content is non-empty valid UTF-8 text, contains no U+0000, and is at most 256 KiB encoded as UTF-8. Before `script_validate(source=custom)` may execute self-test, it repeats the same hash, regular non-symlink file, size/text, anchored API `3`, SemVer metadata, and `sh -n` checks used for a Raw candidate; any failure is `source_rejected` and no code executes. `custom.preserved.sh` is never modified, deleted, or returned by draft operations; migration recovery/import requires explicit out-of-band root access and a deliberate paste/save into the Custom draft.
+
+The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact caller-created draft because byte-preserving editing cannot be combined with content redaction. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned by an RPC.
 
 ### 7.4 LuCI, menu, ACL, and cached-client transition
 
@@ -264,8 +343,8 @@ Default mode is Managed. State mutations are locked, generation-numbered, journa
 
 - Raw source is fixed to `https://raw.githubusercontent.com/Zesuy/luci-app-multi-login/main/etc/multilogin/cqu-portal.sh`.
 - Check/stage never activates or executes candidate code. Stage enforces HTTPS, exact host/repository/branch/path, redirect policy, byte/time limits, free space, regular-file rules, static API/version metadata, SHA-256, and `sh -n`.
-- No enforceable shell sandbox is assumed on supported OpenWrt. `script_validate` therefore treats candidate/custom `self-test` as execution of arbitrary root code: it requires an explicit root-code warning/confirmation, `confirm_execute=true`, and the exact staged hash/generation. Unattended development verifies only syntax, metadata, and the validation decision logic; executable validation is a Phase 9/manual-boundary action. A syntax-only candidate remains `staged`, not `validated`.
-- Activate is always an explicit RPC action originating from a second user confirmation and accepts only a hash-matched `validated` candidate/draft. It snapshots active to LKG, writes the journal, atomically replaces active, rechecks version/self-test and status when an instance is available, then commits state. Failure automatically restores LKG.
+- No enforceable shell sandbox is assumed on supported OpenWrt. `script_validate` therefore first repeats all static acceptance checks, then treats candidate/custom `self-test` as execution of arbitrary root code: it requires an explicit root-code warning/confirmation, `confirm_execute=true`, and the exact staged hash/generation. Unattended development verifies only syntax, metadata, and the validation decision logic; executable validation is a Phase 9/manual-boundary action. A syntax-only candidate or draft remains `staged` or `draft`, not `validated`.
+- Activate is always an explicit RPC action originating from a second user confirmation and accepts only a hash-matched `validated` candidate/draft. It snapshots active to the transaction backup, writes the journal, atomically replaces active, rechecks version/self-test and status when an instance is available, then rotates the previous active into LKG and commits state. Failure restores the transaction backup without changing LKG/state; failed restoration retains the recovery journal and backup.
 - Managed downgrade (candidate version lower than active) requires an explicit `allow_downgrade=true` confirmation plus a matching expected candidate hash; it is never automatic.
 - Restore copies the package factory script through the same validation/activation transaction. Rollback copies LKG through that transaction.
 - Custom save changes only `custom.draft.sh` and requires the caller's base hash/generation. Validation does not activate. Custom activation requires explicit confirmation and switches mode only after the common transaction passes.
