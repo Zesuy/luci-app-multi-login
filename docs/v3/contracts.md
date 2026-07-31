@@ -1,6 +1,6 @@
 # MultiLogin v3 Contracts
 
-Status: Phase 0 candidate under final Gate review
+Status: accepted and frozen for Phase 1 implementation
 
 Baseline source: `main` at `fb272e8`
 

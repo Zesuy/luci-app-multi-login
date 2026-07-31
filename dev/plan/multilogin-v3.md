@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 0 independent-review**
+Status: **Phase 0 accepted; Phase 1 not started**
 
 Target branch: `codex/v3-product-rework`
 
@@ -417,7 +417,7 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | Phase | State | Evidence / commit | Review | Decisions / remaining risks |
 | --- | --- | --- | --- | --- |
 | Plan | accepted | Repository, portal profile, and existing plan inspected on 2026-07-31. Initial review returned `BLOCK`; four gate/durability ambiguities were corrected. | Independent reviewer `/root/plan_review`: `PASS`. | Plan is tracked and committed before Phase 0. |
-| 0 | independent-review | Started 2026-07-31 at `e772078`. Main agent froze `docs/v3/contracts.md`; `/root/phase0_baseline` produced the deterministic generator/report. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit `/root/phase0_audit`: final `PASS`. Gate reviewer found a Phase 4 wrapper/Phase 5 rpcd ordering break; minimal action-launcher migration was moved to Phase 3 and rereview is pending. | ShellCheck and BusyBox are unavailable locally and become mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation are deferred to Phase 9. |
+| 0 | accepted | 2026-07-31; main agent, `/root/phase0_baseline`, `/root/phase0_audit`; accepted content commit `b4fe21e66d0337839788e75e8392f77e922f329d`. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit final `PASS`; independent reviewer `/root/phase0_review` found and verified the Phase 3 rpcd-launcher ordering fix, then returned `PASS`. | ShellCheck and BusyBox unavailable locally; mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation remain Phase 9 manual items. |
 | 1 | pending | Not started. | — | — |
 | 2 | pending | Not started. | — | Real status/login/logout deferred. |
 | 3 | pending | Not started. | — | — |
