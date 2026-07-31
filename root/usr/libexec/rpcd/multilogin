@@ -52,10 +52,24 @@ emit_instance_result() {
 	local output="$9"
 	local outcome="${10}"
 
-	local status_text
+	local status_text result_ok result_code
 	status_text=$(instance_status_text "$action" "$code")
+	case "$outcome" in
+	online | offline | login_success | already_online | already_offline | logout_success)
+		result_ok=1
+		result_code=ok
+		;;
+	*)
+		result_ok=0
+		result_code=$outcome
+		;;
+	esac
 
 	json_init
+	json_add_boolean ok "$result_ok"
+	json_add_string code "$result_code"
+	json_add_string message ''
+	json_add_object data
 	json_add_string action "$action"
 	json_add_string section "$section"
 	json_add_string alias "$alias_name"
@@ -63,15 +77,40 @@ emit_instance_result() {
 	json_add_string v6face "$v6face"
 	json_add_string account_ref "$account_ref"
 	json_add_string ua_type "$ua_type"
-	json_add_int code "$code"
+	json_add_int exit_code "$code"
+	json_add_string outcome "$outcome"
 	json_add_string status "$status_text"
-	if [ "$code" -eq 0 ]; then
-		json_add_boolean success 1
-	else
-		json_add_boolean success 0
-	fi
+	json_add_boolean success "$result_ok"
+	json_add_string output "$output"
+	json_close_object
+	# Safe one-major-version adapter. The legacy numeric code is renamed because
+	# the authoritative top-level code is the standard string code (D-011).
+	json_add_string action "$action"
+	json_add_string section "$section"
+	json_add_string alias "$alias_name"
+	json_add_string interface "$interface"
+	json_add_string v6face "$v6face"
+	json_add_string account_ref "$account_ref"
+	json_add_string ua_type "$ua_type"
+	json_add_int legacy_code "$code"
+	json_add_string status "$status_text"
+	json_add_boolean success "$result_ok"
 	json_add_string output "$output"
 	json_add_string outcome "$outcome"
+	json_dump
+	printf '\n'
+}
+
+emit_instance_error() {
+	local code="$1"
+	local message="$2"
+	json_init
+	json_add_boolean ok 0
+	json_add_string code "$code"
+	json_add_string message "$message"
+	json_add_object data
+	json_close_object
+	json_add_string error "$message"
 	json_dump
 	printf '\n'
 }
@@ -105,19 +144,19 @@ validate_instance_for_action() {
 	local action="$2"
 
 	if [ -z "$section" ]; then
-		printf '{"error":"missing section"}\n'
+		emit_instance_error invalid_request 'missing section'
 		return 1
 	fi
 
 	if [ "$(uci -q get "multilogin.$section")" != "instance" ]; then
-		printf '{"error":"instance not found"}\n'
+		emit_instance_error not_found 'instance not found'
 		return 1
 	fi
 
 	load_instance_config "$section" "$action"
 
 	if [ -z "$INSTANCE_INTERFACE" ]; then
-		printf '{"error":"instance config incomplete"}\n'
+		emit_instance_error invalid_state 'instance config incomplete'
 		return 1
 	fi
 
@@ -125,18 +164,18 @@ validate_instance_for_action() {
 	check) ;;
 	logout)
 		if [ -z "$INSTANCE_ACCOUNT_REF" ] || [ -z "$INSTANCE_USERNAME" ]; then
-			printf '{"error":"instance config incomplete"}\n'
+			emit_instance_error invalid_state 'instance config incomplete'
 			return 1
 		fi
 		;;
 	test)
 		if [ -z "$INSTANCE_ACCOUNT_REF" ] || [ -z "$INSTANCE_USERNAME" ] || [ -z "$INSTANCE_PASSWORD" ]; then
-			printf '{"error":"instance config incomplete"}\n'
+			emit_instance_error invalid_state 'instance config incomplete'
 			return 1
 		fi
 		;;
 	*)
-		printf '{"error":"invalid action"}\n'
+		emit_instance_error invalid_request 'invalid action'
 		return 1
 		;;
 	esac
@@ -357,10 +396,13 @@ trap on_action_signal HUP INT TERM
 
 case "$1" in
 list)
-	printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""}}\n'
+	printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""},"script_info":{},"script_check":{},"script_stage":{"expected_generation":0},"script_validate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_execute":false},"script_activate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_activate":false,"allow_downgrade":false},"script_rollback":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_restore":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_get_draft":{},"script_save_draft":{"content":"","base_sha256":"","expected_generation":0},"script_discard_draft":{"expected_sha256":"","expected_generation":0}}\n'
 	;;
 call)
 	case "$2" in
+	script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_save_draft | script_discard_draft)
+		exec /usr/libexec/multilogin-script rpc "$2"
+		;;
 	quick_setup)
 		# Read JSON params from stdin: {"base_iface":"eth0","count":3}
 		json=$(cat)

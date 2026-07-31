@@ -48,6 +48,8 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-multi-login.json $(1)/usr/share/luci/menu.d/
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-multi-login.json $(1)/usr/share/rpcd/acl.d/
 	$(INSTALL_BIN) ./root/usr/libexec/rpcd/multilogin $(1)/usr/libexec/rpcd/
+	$(INSTALL_BIN) ./root/usr/libexec/multilogin-script $(1)/usr/libexec/
+	$(INSTALL_DATA) ./root/usr/lib/multilogin/script-policy.sh $(1)/usr/lib/multilogin/
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/multilogin/* $(1)/www/luci-static/resources/view/multilogin/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/

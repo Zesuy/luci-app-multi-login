@@ -34,6 +34,7 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `/etc/multilogin/login_control.bash` | `0755` | Package-managed controller. |
 | `/etc/multilogin/cqu-portal.sh` | `0755` | Atomic active portal script; updateable. |
 | `/usr/lib/multilogin/cqu-portal.factory.sh` | `0755` | Package-managed factory copy used by restore; never updated from Raw. |
+| `/usr/lib/multilogin/script-policy.sh` | `0644` | Package-managed source-only pure policy library shared by the fixed backend and host logic tests; it performs no I/O on load. |
 | `/usr/libexec/multilogin-script` | `0755` | Package-managed script-state backend/helper; exposes fixed internal `recover` mode to init and fixed RPC operations to the rpcd handler. |
 | `/etc/multilogin/login.sh` | `0755` | Package-managed login compatibility wrapper. |
 | `/etc/multilogin/check_status.sh` | `0755` | Package-managed status compatibility wrapper. |
@@ -45,6 +46,7 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `.script-state/custom.draft.sh` | `0600` | Unvalidated/validated Custom draft; never active in place. |
 | `.script-state/custom.preserved.sh` | `0600` | Migration preservation slot or explicit Custom backup. |
 | `.script-state/activation.journal` | `0600` | Recoverable activation transaction. |
+| `.script-state/activation.backup.sh` | `0600` | Persistent previous-active transaction backup referenced only by the fixed activation journal; removed after commit or successful recovery. |
 | `/var/lock/multilogin-script.lock` | `0600` | Script-state mutation lock. |
 | `/etc/multilogin/.migration-v3/` | `0700` | Idempotent upgrade/downgrade state and legacy snapshots. |
 | `/var/lock/multilogin-migrate.lock` | `0600` | Package migration lock. |
@@ -52,6 +54,8 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `/var/log/multilogin.log` | `0600` | Redacted diagnostics only. |
 
 Temporary action/curl files use an unpredictable `mktemp -d` directory under `${TMPDIR:-/tmp}`, immediately set to `0700`; files are `0600`. Traps remove them on `EXIT`, `HUP`, `INT`, and `TERM`. Names never include interface, username, password, URL query, or other user-controlled values.
+
+`script-policy.sh` exports only namespaced pure predicates `ml_policy_semver_compare`, `ml_policy_relation`, `ml_policy_request_fields`, `ml_policy_transition`, `ml_policy_generation`, `ml_policy_boolean`, `ml_policy_http`, `ml_policy_content_file`, and `ml_policy_downgrade`. It performs no work when sourced and is not an RPC or supported operator CLI.
 
 `login_huxi.sh` and `login_A.sh` are not installed by v3. Known stock copies are retired. Unknown/custom copies encountered during upgrade are preserved as inactive migration artifacts and are never executed automatically.
 
@@ -216,9 +220,9 @@ The exact v2 response/effect baseline is:
 - Action methods return top-level `action`, `section`, `alias`, `interface`, `v6face`, `account_ref`, `username`, `ua_type`, integer `code`, localized `status`, boolean `success`, and raw combined-script `output`. Check maps `0/1/other` to online/offline/check-failed; test maps `0/1/2/other` to login-success/login-failed/already-online/script-error; logout maps `0/1/other` to logout-success/logout-failed/script-error. An action-script nonzero code still emits JSON and the rpcd handler itself normally exits `0`; validation errors emit `error` and exit `1`.
 - Save/delete success is top-level `{"result":"ok"}` plus `section` when created/saved. Instance save/delete commits UCI and asynchronously restarts MultiLogin; account save/delete commits without service restart. Account delete currently ignores instance references.
 
-V3 removes raw/localized output and unsafe side effects, but preserved method names carry a one-major-version cached-client adapter: the standard envelope is authoritative, while safe legacy top-level keys (`result`, `count`, `base_iface`, `interfaces`, `action`, `code`, `status`, `success`, sanitized `output`, `section`, or `error` as applicable) are duplicated through v3.x. The adapter never restores passwords, usernames in action results, raw command output, prefix-wide deletion, or arbitrary service actions. Removal of these compatibility keys requires a future major version.
+V3 removes raw/localized output and unsafe side effects, but preserved method names carry a one-major-version cached-client adapter: the standard envelope is authoritative, while safe legacy top-level keys (`result`, `count`, `base_iface`, `interfaces`, `action`, `legacy_code`, `status`, `success`, sanitized `output`, `section`, or `error` as applicable) are duplicated through v3.x. Standard top-level `code` is always the required string and cannot also be the v2 integer; action responses therefore expose the old integer as top-level `legacy_code` and `data.exit_code`. The cached v2 page only stringifies/displays `code`, so the authoritative string remains renderable without a runtime failure. The adapter never restores passwords, usernames in action results, raw command output, prefix-wide deletion, or arbitrary service actions. Removal of these compatibility keys requires a future major version.
 
-Ordering constraint: Phase 3 changes `check_instance`, `test_instance`, and `logout_instance` to call unified `status`, `login`, and `logout` before Phase 4 replaces legacy wrappers. Status/logout receive no password; login receives it only on stdin. Phase 3 keeps safe legacy top-level action status/code fields so cached LuCI continues to work; Phase 5 later integrates these launchers into the full standard backend/update state machine.
+Ordering constraint: Phase 3 changes `check_instance`, `test_instance`, and `logout_instance` to call unified `status`, `login`, and `logout` before Phase 4 replaces legacy wrappers. Status/logout receive no password; login receives it only on stdin. Phase 3 temporarily keeps the numeric top-level action code; Phase 5 integrates these launchers into the standard envelope, where the unavoidable name collision moves that integer to `legacy_code`/`data.exit_code` while retaining the safe display fields.
 
 ### 7.2 Standard RPC envelope
 

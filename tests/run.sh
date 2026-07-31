@@ -52,7 +52,7 @@ expect_failure() {
 
 check_shell_syntax() {
 	LIST=$TEMP_ROOT/shell-files
-	find "$REPOSITORY/etc" "$REPOSITORY/tools" "$REPOSITORY/root/usr/libexec" "$TEST_DIR" -type f -print | LC_ALL=C sort >"$LIST"
+	find "$REPOSITORY/etc" "$REPOSITORY/tools" "$REPOSITORY/root/usr/lib" "$REPOSITORY/root/usr/libexec" "$TEST_DIR" -type f -print | LC_ALL=C sort >"$LIST"
 	while IFS= read -r FILE; do
 		read -r FIRST_LINE <"$FILE" || FIRST_LINE=
 		case $FIRST_LINE in
@@ -73,7 +73,7 @@ check_busybox_ash() {
 	fi
 
 	LIST=$TEMP_ROOT/posix-shell-files
-	find "$REPOSITORY/etc" "$REPOSITORY/tools" "$REPOSITORY/root/usr/libexec" "$TEST_DIR" -type f -print | LC_ALL=C sort >"$LIST"
+	find "$REPOSITORY/etc" "$REPOSITORY/tools" "$REPOSITORY/root/usr/lib" "$REPOSITORY/root/usr/libexec" "$TEST_DIR" -type f -print | LC_ALL=C sort >"$LIST"
 	while IFS= read -r FILE; do
 		read -r FIRST_LINE <"$FILE" || FIRST_LINE=
 		case $FIRST_LINE in
@@ -209,5 +209,7 @@ check_baseline
 negative_tests
 node "$TEST_DIR/test-phase4-logic.mjs"
 pass 'Phase 4 static and pure wrapper logic suite'
+node "$TEST_DIR/test-phase5-logic.mjs"
+pass 'Phase 5 static and pure policy logic suite'
 
 printf '\n%d checks passed; %d optional tooling checks skipped.\n' "$PASS_COUNT" "$SKIP_COUNT"
