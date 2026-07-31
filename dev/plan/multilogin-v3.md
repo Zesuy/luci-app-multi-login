@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 2 independent-review**
+Status: **Phase 2 accepted; Phase 3 not started**
 
 Target branch: `codex/v3-product-rework`
 
@@ -420,7 +420,7 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | Plan | accepted | Repository, portal profile, and existing plan inspected on 2026-07-31. Initial review returned `BLOCK`; four gate/durability ambiguities were corrected. | Independent reviewer `/root/plan_review`: `PASS`. | Plan is tracked and committed before Phase 0. |
 | 0 | accepted | 2026-07-31; main agent, `/root/phase0_baseline`, `/root/phase0_audit`; accepted content commit `b4fe21e66d0337839788e75e8392f77e922f329d`. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit final `PASS`; independent reviewer `/root/phase0_review` found and verified the Phase 3 rpcd-launcher ordering fix, then returned `PASS`. | ShellCheck and BusyBox unavailable locally; mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation remain Phase 9 manual items. |
 | 1 | accepted | 2026-07-31; main agent, `/root/phase1_tests`, `/root/phase1_ci`; accepted content commit `f0ebfe2e88181178edfef682a9f977e36f7dfc77`. Local `14 PASS/3 SKIP`; required BusyBox/ShellCheck/shfmt mode final `18 PASS/0 SKIP`; missing-tool CI negative, all intentional bad cases, workflow full-history/pins/permissions, and diff checks passed. | `/root/phase1_review` blocked shallow checkout and incomplete future lint scope; fixes were rerun and reviewer returned `PASS`. | Generic mocks must be extended, not weakened. All shell files changed from the v2 baseline automatically enter lint. |
-| 2 | independent-review | Started 2026-07-31 at `b46c9bf`. `/root/phase2_script` implemented only `cqu-portal.sh`; the initial test task was interrupted at user request and Luna `/root/phase2_tests_luna` completed `tests/**`. Direct offline version/self-test passed. Required BusyBox/ShellCheck/shfmt runner: `19 PASS/0 SKIP`; portal groups cover strict CLI, status, PC/mobile login, exact curl config/UA, stdin secret framing, ret-code race, classification, IPv4/IPv6, logout precedence/bounds, identity ambiguity, signal cleanup, and concurrency. | Independent Gate reviewer pending. | Real read-only status/login/logout remain `DEFERRED-MANUAL` to Phase 9; no real portal/device action occurred. |
+| 2 | accepted | 2026-07-31; `/root/phase2_script` and Luna `/root/phase2_tests_luna`; accepted content commit `8b31696fd78857b6ff63f04d1c09082a9e70c560`. Direct offline version/self-test and required BusyBox/ShellCheck/shfmt runner passed (`19 PASS/0 SKIP`); portal groups cover strict CLI, PC/mobile, exact config/UA, stdin secret framing, ret-code race, classification, IPv4/IPv6, logout precedence/bounds, identity ambiguity, signals, and concurrency. | Independent Terra reviewer `/root/phase2_review`: `PASS`. | Real read-only status/login/logout remain `DEFERRED-MANUAL` to Phase 9; no real portal/device action occurred. |
 | 3 | pending | Not started. | — | — |
 | 4 | pending | Not started. | — | — |
 | 5 | pending | Not started. | — | Real post-activation status deferred. |
