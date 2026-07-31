@@ -12,14 +12,14 @@ usage() {
 }
 
 case ${1-} in
-	-h|--help)
-		usage
-		exit 0
-		;;
-	-*)
-		printf 'error: baseline-ref must not begin with a dash\n' >&2
-		exit 2
-		;;
+-h | --help)
+	usage
+	exit 0
+	;;
+-*)
+	printf 'error: baseline-ref must not begin with a dash\n' >&2
+	exit 2
+	;;
 esac
 
 if [ "$#" -gt 1 ]; then
@@ -28,7 +28,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 BASELINE_REF=${1:-$DEFAULT_BASELINE_REF}
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 export GIT_OPTIONAL_LOCKS=0
 export LC_ALL=C
@@ -224,8 +224,7 @@ for action_path in \
 	etc/multilogin/login_A.sh \
 	etc/multilogin/check_status.sh \
 	etc/multilogin/logout.sh \
-	etc/multilogin/quick_setup.sh
-do
+	etc/multilogin/quick_setup.sh; do
 	flags=$(case_flags "$action_path")
 	if [ "$action_path" = etc/multilogin/check_status.sh ]; then
 		flags='--check-only (plus pass-through)'

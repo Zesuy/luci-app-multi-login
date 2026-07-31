@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "fixtures": [
+    { "file": "offline.jsonp", "scenario": "offline", "valid": true, "result": 0 },
+    { "file": "pc-online.jsonp", "scenario": "pc_online", "valid": true, "result": 1, "phone_flag": 0 },
+    { "file": "mobile-online.jsonp", "scenario": "mobile_online", "valid": true, "result": 1, "phone_flag": 1 },
+    { "file": "login-success.jsonp", "scenario": "login_success", "valid": true, "result": 1 },
+    { "file": "login-auth-failure.jsonp", "scenario": "login_auth_failure", "valid": true, "result": 0 },
+    { "file": "malformed.jsonp", "scenario": "malformed_jsonp", "valid": false },
+    { "file": "unbind-success.jsonp", "scenario": "unbind", "valid": true, "result": 1 },
+    { "file": "check-logout-success.jsonp", "scenario": "check_logout", "valid": true, "result": 1 },
+    { "file": "logout-delayed-01-online.jsonp", "scenario": "delayed_logout_online_1", "valid": true, "result": 1, "phone_flag": 0 },
+    { "file": "logout-delayed-02-online.jsonp", "scenario": "delayed_logout_online_2", "valid": true, "result": 1, "phone_flag": 0 },
+    { "file": "logout-delayed-03-offline.jsonp", "scenario": "delayed_logout_offline", "valid": true, "result": 0 }
+  ]
+}

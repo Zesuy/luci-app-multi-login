@@ -1,6 +1,6 @@
 # MultiLogin v3 Execution Plan
 
-Status: **Phase 0 accepted; Phase 1 not started**
+Status: **Phase 1 independent-review**
 
 Target branch: `codex/v3-product-rework`
 
@@ -418,7 +418,7 @@ Allowed unattended work includes local branches/commits, offline mocks/fixtures,
 | --- | --- | --- | --- | --- |
 | Plan | accepted | Repository, portal profile, and existing plan inspected on 2026-07-31. Initial review returned `BLOCK`; four gate/durability ambiguities were corrected. | Independent reviewer `/root/plan_review`: `PASS`. | Plan is tracked and committed before Phase 0. |
 | 0 | accepted | 2026-07-31; main agent, `/root/phase0_baseline`, `/root/phase0_audit`; accepted content commit `b4fe21e66d0337839788e75e8392f77e922f329d`. Checks passed: shell/Bash/JS syntax, JSON, two byte-identical baseline reproductions, stock-script equality, contract UCI/RPC/exit coverage, secret-placeholder scan, and `git diff --check`. | Test/audit final `PASS`; independent reviewer `/root/phase0_review` found and verified the Phase 3 rpcd-launcher ordering fix, then returned `PASS`. | ShellCheck and BusyBox unavailable locally; mandatory in Phase 1 CI. Real device/portal actions and candidate root-code validation remain Phase 9 manual items. |
-| 1 | pending | Not started. | — | — |
+| 1 | independent-review | Started 2026-07-31 at `e13bb81`; main agent integrated `/root/phase1_tests` (`tests/**`) and `/root/phase1_ci` (`.github/workflows/ci.yml`). `./tests/run.sh`: local `14 PASS/3 SKIP`; required mode with BusyBox 1.36.1, ShellCheck 0.9.0, shfmt 3.8.0: `17 PASS/0 SKIP`. Missing-tool CI negative, bad syntax/JSONP/sentinel/unsafe pattern/secret argv/unexpected command/network negatives, workflow structure/pins, and `git diff --check` passed. | Independent Gate reviewer pending. | Generic mocks are extended, not weakened, in later phases. Phase 0 generator was mechanically formatted/fixed for the new mandatory lint; byte-identical report reproduction still passes. |
 | 2 | pending | Not started. | — | Real status/login/logout deferred. |
 | 3 | pending | Not started. | — | — |
 | 4 | pending | Not started. | — | — |
