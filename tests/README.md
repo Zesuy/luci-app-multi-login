@@ -23,3 +23,10 @@ allowed and network-facing doubles also require a scripted response.
 of the matching source line. Missing entries are allowed so the list can shrink;
 new or changed findings fail the suite. Never add an entry for v3 code merely to
 make a check pass.
+
+Phase 2 portal tests run `cqu-portal.sh` as a black box. They synthesize all
+interface and JSONP data, reject direct network commands, inspect each live curl
+config synchronously, and retain only redacted metadata and secret hashes. The
+suite covers the action/exit contract, exact request sequence and parameters,
+bounded polling, multi-record identity selection, signal cleanup, and concurrent
+temporary-file isolation.

@@ -277,5 +277,11 @@ pass 'legacy unsafe-pattern allowlist and repository secret guard'
 check_baseline
 check_mock_capture
 negative_tests
+(
+	PATH=$ORIGINAL_PATH
+	export PATH
+	node "$TEST_DIR/test-cqu-portal.mjs"
+)
+pass 'unified portal offline black-box suite'
 
 printf '\n%d checks passed; %d optional tooling checks skipped.\n' "$PASS_COUNT" "$SKIP_COUNT"

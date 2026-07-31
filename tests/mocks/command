@@ -45,12 +45,30 @@ for ARG; do
 	printf '%s\0' "$ARG" >>"$CALL_DIR/argv.bin"
 done
 
-if [ -t 0 ]; then
+if [ "$COMMAND" = jsonfilter ] && [ -n "${MULTILOGIN_MOCK_JSONFILTER_HELPER:-}" ]; then
+	exec node "$MULTILOGIN_MOCK_JSONFILTER_HELPER" "$CALL_DIR/stdin.length" "$CALL_DIR/stdin.sha256" "$@"
+elif [ -t 0 ]; then
 	printf '%s\n' 0 >"$CALL_DIR/stdin.length"
 	printf '%s\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 >"$CALL_DIR/stdin.sha256"
 else
 	node "$CAPTURE_HELPER" "$CALL_DIR/stdin.length" "$CALL_DIR/stdin.sha256"
 fi
+
+if [ "$COMMAND" = mwan3 ] && [ -n "${MULTILOGIN_MOCK_CURL_INSPECTOR:-}" ]; then
+	[ "$#" -eq 5 ] || exit 93
+	if [ "$1" != use ] || [ "$3" != curl ] || [ "$4" != --config ]; then
+		exit 93
+	fi
+	node "$MULTILOGIN_MOCK_CURL_INSPECTOR" "$5" "$CALL_DIR/curl-config.json" || exit 93
+fi
+
+case $COMMAND in
+ifstatus | ip | uci | logger | sleep)
+	if [ -n "${MULTILOGIN_MOCK_DEVICE_HELPER:-}" ]; then
+		exec node "$MULTILOGIN_MOCK_DEVICE_HELPER" "$COMMAND" "$@"
+	fi
+	;;
+esac
 
 RESPONSE_DIR=$STATE/responses/$COMMAND/$COUNT
 DEFAULT_DIR=$STATE/responses/$COMMAND/default
@@ -69,6 +87,9 @@ curl | mwan3)
 esac
 
 if [ -n "$SELECTED_DIR" ]; then
+	if [ -f "$SELECTED_DIR/block" ]; then
+		while [ -f "$SELECTED_DIR/block" ]; do /bin/sleep 0.02; done
+	fi
 	[ ! -f "$SELECTED_DIR/stdout" ] || cat "$SELECTED_DIR/stdout"
 	[ ! -f "$SELECTED_DIR/stderr" ] || cat "$SELECTED_DIR/stderr" >&2
 	if [ -f "$SELECTED_DIR/status" ]; then
