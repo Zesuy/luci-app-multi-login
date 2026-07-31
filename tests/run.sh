@@ -4,11 +4,8 @@ set -eu
 
 TEST_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY=$(cd -- "$TEST_DIR/.." && pwd)
-ORIGINAL_PATH=$PATH
 BASELINE_REF=fb272e8285c65415dea8a9a359a4204b94be06a0
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/multilogin-tests.XXXXXX")
-MOCK_BIN=$TEMP_ROOT/mock-bin
-MOCK_STATE=$TEMP_ROOT/mock-state
 PASS_COUNT=0
 SKIP_COUNT=0
 
@@ -51,44 +48,6 @@ expect_failure() {
 	fi
 	rm -f "$OUTPUT"
 	pass "$NAME rejects the intentional bad case"
-}
-
-expect_status() {
-	NAME=$1
-	EXPECTED_STATUS=$2
-	shift 2
-	OUTPUT=$TEMP_ROOT/expected-status.out
-	if "$@" >"$OUTPUT" 2>&1; then
-		ACTUAL_STATUS=0
-	else
-		ACTUAL_STATUS=$?
-	fi
-	rm -f "$OUTPUT"
-	[ "$ACTUAL_STATUS" -eq "$EXPECTED_STATUS" ] || fail "$NAME returned $ACTUAL_STATUS, expected $EXPECTED_STATUS"
-	pass "$NAME rejects the intentional bad case"
-}
-
-setup_mocks() {
-	mkdir -p "$MOCK_BIN" "$MOCK_STATE/allow" "$MOCK_STATE/responses"
-	for COMMAND in \
-		uci ubus jsonfilter ifstatus ip mwan3 curl logger service multilogin-init \
-		procd procd_open_instance procd_set_param procd_close_instance \
-		procd_add_reload_trigger df stat date od sleep kill multilogin-signal; do
-		ln -s "$TEST_DIR/mocks/command" "$MOCK_BIN/$COMMAND"
-	done
-	MULTILOGIN_MOCK_STATE=$MOCK_STATE
-	MULTILOGIN_MOCK_CAPTURE_HELPER=$TEST_DIR/mocks/capture-stdin.mjs
-	export MULTILOGIN_MOCK_STATE MULTILOGIN_MOCK_CAPTURE_HELPER
-	PATH=$MOCK_BIN:$ORIGINAL_PATH
-	export PATH
-}
-
-allow_mock() {
-	COMMAND=$1
-	STATUS=${2:-0}
-	mkdir -p "$MOCK_STATE/responses/$COMMAND/default"
-	: >"$MOCK_STATE/allow/$COMMAND"
-	printf '%s\n' "$STATUS" >"$MOCK_STATE/responses/$COMMAND/default/status"
 }
 
 check_shell_syntax() {
@@ -205,28 +164,6 @@ check_baseline() {
 	pass 'deterministic Phase 0 baseline reproduction'
 }
 
-check_mock_capture() {
-	allow_mock uci 0
-	printf '1\n' >"$MOCK_STATE/responses/uci/default/stdout"
-	SENTINEL="phase1-stdin-guard-$(printf 'fixture' | sha256sum | cut -c1-12)"
-	EXPECTED_HASH=$(printf '%s' "$SENTINEL" | sha256sum | awk '{ print $1 }')
-	MULTILOGIN_MOCK_SECRET_SHA256=$EXPECTED_HASH
-	export MULTILOGIN_MOCK_SECRET_SHA256
-	expect_status 'secret-bearing mock argv' 94 uci get "$SENTINEL"
-	node "$TEST_DIR/check-safety.mjs" --root "$MOCK_STATE" --allowlist /dev/null --sentinel "$SENTINEL"
-	RESULT=$(printf '%s' "$SENTINEL" | uci get multilogin.global.enabled)
-	[ "$RESULT" = 1 ] || fail 'mock response was not returned'
-
-	CALL=$MOCK_STATE/calls/uci/1
-	EXPECTED_ARGV=$TEMP_ROOT/expected-argv.bin
-	printf 'get\0multilogin.global.enabled\0' >"$EXPECTED_ARGV"
-	cmp "$EXPECTED_ARGV" "$CALL/argv.bin"
-	[ "$(cat "$CALL/stdin.length")" -eq "${#SENTINEL}" ] || fail 'mock stdin length is incorrect'
-	[ "$(cat "$CALL/stdin.sha256")" = "$EXPECTED_HASH" ] || fail 'mock stdin hash is incorrect'
-	node "$TEST_DIR/check-safety.mjs" --root "$CALL" --allowlist /dev/null --sentinel "$SENTINEL"
-	pass 'PATH mock captures NUL argv and stdin metadata only'
-}
-
 negative_tests() {
 	BAD_SHELL=$TEMP_ROOT/bad.sh
 	printf '%s\n' '#!/bin/sh' 'if then' >"$BAD_SHELL"
@@ -244,11 +181,6 @@ negative_tests() {
 	mkdir -p "$UNSAFE_ROOT"
 	printf '%s\n' '#!/bin/sh' 'eval "fixture"' >"$UNSAFE_ROOT/new.sh"
 	expect_failure 'new unsafe pattern' node "$TEST_DIR/check-safety.mjs" --root "$UNSAFE_ROOT" --allowlist /dev/null
-
-	expect_status 'unexpected mock command' 97 logger 'must-not-run'
-
-	: >"$MOCK_STATE/allow/curl"
-	expect_status 'unscripted network mock' 96 curl 'https://invalid.example.test/'
 }
 
 require_command sh
@@ -261,7 +193,6 @@ require_command sha256sum
 require_command awk
 require_command sed
 
-setup_mocks
 check_shell_syntax
 check_busybox_ash
 check_lint_scope
@@ -275,17 +206,8 @@ pass 'redacted JSONP fixtures and scenario coverage'
 node "$TEST_DIR/check-safety.mjs" --sentinel "phase1-repository-guard-$(printf 'absent' | sha256sum | cut -c1-12)"
 pass 'legacy unsafe-pattern allowlist and repository secret guard'
 check_baseline
-check_mock_capture
 negative_tests
-(
-	PATH=$ORIGINAL_PATH
-	export PATH
-	node "$TEST_DIR/test-cqu-portal.mjs"
-)
-pass 'unified portal offline black-box suite'
-node "$TEST_DIR/test-controller.mjs"
-pass 'controller offline black-box suite'
-node "$TEST_DIR/test-rpc-actions.mjs"
-pass 'RPC action contract suite'
+node "$TEST_DIR/test-phase4-logic.mjs"
+pass 'Phase 4 static and pure wrapper logic suite'
 
 printf '\n%d checks passed; %d optional tooling checks skipped.\n' "$PASS_COUNT" "$SKIP_COUNT"

@@ -22,6 +22,10 @@ define Package/luci-app-multilogin/description
 	Supports both PC and mobile User-Agent types.
 endef
 
+define Package/luci-app-multilogin/conffiles
+/etc/config/multilogin
+endef
+
 define Build/Prepare
 endef
 
@@ -39,6 +43,7 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/etc/multilogin
+	$(INSTALL_DIR) $(1)/usr/lib/multilogin
 	
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-multi-login.json $(1)/usr/share/luci/menu.d/
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-multi-login.json $(1)/usr/share/rpcd/acl.d/
@@ -48,38 +53,38 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/
 	$(INSTALL_BIN) ./etc/multilogin/login_control.bash $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/login.sh $(1)/etc/multilogin/
-	$(INSTALL_BIN) ./etc/multilogin/login_huxi.sh $(1)/etc/multilogin/
-	$(INSTALL_BIN) ./etc/multilogin/login_A.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/check_status.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/logout.sh $(1)/etc/multilogin/
 	$(INSTALL_BIN) ./etc/multilogin/quick_setup.sh $(1)/etc/multilogin/
+	$(INSTALL_BIN) ./etc/multilogin/cqu-portal.sh $(1)/usr/lib/multilogin/cqu-portal.factory.sh
+endef
+
+define Package/luci-app-multilogin/preinst
+#!/bin/sh
+ML_MIGRATION_EMBEDDED=1
+$$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$$(file <$(CURDIR)/package/hooks/preinst.sh)
 endef
 
 define Package/luci-app-multilogin/postinst
 #!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	/etc/init.d/multilogin enable
-	/etc/init.d/rpcd restart
-}
-exit 0
+ML_MIGRATION_EMBEDDED=1
+$$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$$(file <$(CURDIR)/package/hooks/postinst.sh)
 endef
 
 define Package/luci-app-multilogin/prerm
 #!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	/etc/init.d/multilogin stop 2>/dev/null || true
-	/etc/init.d/multilogin disable 2>/dev/null || true
-	/etc/init.d/rpcd restart 2>/dev/null || true
-}
-exit 0
+ML_MIGRATION_EMBEDDED=1
+$$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$$(file <$(CURDIR)/package/hooks/prerm.sh)
 endef
 
 define Package/luci-app-multilogin/postrm
 #!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	rm -f /etc/rc.d/S??multilogin /etc/rc.d/K??multilogin 2>/dev/null || true
-}
-exit 0
+ML_MIGRATION_EMBEDDED=1
+$$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$$(file <$(CURDIR)/package/hooks/postrm.sh)
 endef
 
 $(eval $(call BuildPackage,luci-app-multilogin))
