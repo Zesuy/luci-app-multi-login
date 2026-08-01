@@ -1,6 +1,6 @@
 # MultiLogin v3 Contracts
 
-Status: accepted and frozen for Phase 1 implementation
+Status: accepted and frozen through Phase 7 implementation
 
 Baseline source: `main` at `fb272e8`
 
@@ -36,6 +36,8 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `/usr/lib/multilogin/cqu-portal.factory.sh` | `0755` | Package-managed factory copy used by restore; never updated from Raw. |
 | `/usr/lib/multilogin/script-policy.sh` | `0644` | Package-managed source-only pure policy library shared by the fixed backend and host logic tests; it performs no I/O on load. |
 | `/usr/libexec/multilogin-script` | `0755` | Package-managed script-state backend/helper; exposes fixed internal `recover` mode to init and fixed RPC operations to the rpcd handler. |
+| `/usr/lib/multilogin/config-policy.sh` | `0644` | Package-managed source-only Phase 7 request, ownership-plan, and journal-reducer predicates; performs no I/O on load. |
+| `/usr/libexec/multilogin-config` | `0755` | Package-managed fixed configuration, diagnostics, service, log, and owned-network backend. |
 | `/etc/multilogin/login.sh` | `0755` | Package-managed login compatibility wrapper. |
 | `/etc/multilogin/check_status.sh` | `0755` | Package-managed status compatibility wrapper. |
 | `/etc/multilogin/logout.sh` | `0755` | Package-managed logout compatibility wrapper. |
@@ -50,7 +52,9 @@ All persistent files are owned by `root:root`. Directories reject group/other ac
 | `/var/lock/multilogin-script.lock` | `0600` | Script-state mutation lock. |
 | `/etc/multilogin/.migration-v3/` | `0700` | Idempotent upgrade/downgrade state and legacy snapshots. |
 | `/var/lock/multilogin-migrate.lock` | `0600` | Package migration lock. |
-| `/etc/multilogin/network-journal.json` | `0600` | Phase 7 owned-network recovery journal. |
+| `/etc/multilogin/network-state.json` | `0600` | Phase 7 exact owned-network IDs and generation; never infers ownership from a name prefix. |
+| `/etc/multilogin/network-journal.json` | `0600` | Phase 7 owned-network recovery journal containing exact before/after ownership plans. |
+| `/var/lock/multilogin-config.lock` | `0600` | Configuration and owned-network mutation lock. |
 | `/var/log/multilogin.log` | `0600` | Redacted diagnostics only. |
 
 Temporary action/curl files use an unpredictable `mktemp -d` directory under `${TMPDIR:-/tmp}`, immediately set to `0700`; files are `0600`. Traps remove them on `EXIT`, `HUP`, `INT`, and `TERM`. Names never include interface, username, password, URL query, or other user-controlled values.
@@ -232,7 +236,7 @@ Every v3 method returns one object:
 {"ok":true,"code":"ok","message":"","data":{}}
 ```
 
-Failures set `ok=false`, use a stable lower-snake-case `code`, provide a bounded non-secret `message`, and return an object `data`. No method returns arbitrary command stdout/stderr, a MultiLogin account password, full UCI account objects, raw portal bodies, file paths supplied by a client, or script content except the explicitly requested Custom draft returned by `script_get_draft`.
+The top-level types are fixed: `ok` is a JSON boolean, `code` and `message` are JSON strings, and `data` is a JSON object. `message` is valid UTF-8 and at most 512 encoded bytes. Failures set `ok=false`, use a stable lower-snake-case `code`, provide a bounded non-secret `message`, and still return an object `data`. No method returns arbitrary command stdout/stderr, a MultiLogin account password, full UCI account objects, raw portal bodies, file paths supplied by a client, or script content except the explicitly requested Custom draft returned by `script_get_draft`.
 
 ### 7.3 New fixed method families
 
@@ -322,6 +326,134 @@ Managed downgrade means only `script_activate` of a Raw candidate whose valid Se
 Custom content is non-empty valid UTF-8 text, contains no U+0000, and is at most 256 KiB encoded as UTF-8. Before `script_validate(source=custom)` may execute self-test, it repeats the same hash, regular non-symlink file, size/text, anchored API `3`, SemVer metadata, and `sh -n` checks used for a Raw candidate; any failure is `source_rejected` and no code executes. `custom.preserved.sh` is never modified, deleted, or returned by draft operations; migration recovery/import requires explicit out-of-band root access and a deliberate paste/save into the Custom draft.
 
 The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact caller-created draft because byte-preserving editing cannot be combined with content redaction. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned by an RPC.
+
+#### 7.3.2 Phase 7 configuration, diagnostics, and ownership RPC schemas
+
+All methods below use the standard envelope, reject unknown fields and wrong JSON types, and accept no path, URL, UCI expression, object name, init-script name, or arbitrary command. Existing v2 method names remain callable through the v3.x compatibility adapter, but their authoritative result is the standard envelope. A compatibility field never contains a password, username from an action result, raw child output, or an unowned object selected by prefix.
+
+| Method | Exact parameters | Success `data` |
+| --- | --- | --- |
+| `get_overview` | none | `settings_enabled`, `service_enabled`, `service_running`, `account_count`, `instance_count`, `enabled_instance_count`, `owned_network_count`, and `network_recovery_required`. |
+| `get_settings` | none | `enabled`, `log_level`, `retry_interval`, `check_interval`, `max_retry_delay`, and `already_logged_delay`. |
+| `save_settings` | the six fields returned by `get_settings` | The exact saved settings plus `restart_required`. Saving configuration never performs an implicit service action. |
+| `list_accounts` | none | `accounts`, an array of exact objects with `section`, `alias`, `username`, `password_set`, and `reference_count`. |
+| `save_account` | `section`, `alias`, `username`, `password` | `section` and `password_set`. Empty password preserves an existing password and is rejected for a new account. |
+| `delete_account` | `section` | `section`. A referenced account fails with `conflict` and `data.references`, an array of exact instance section IDs; no cascade occurs. |
+| `list_instances` | none | `instances` and `interfaces`. Each instance has `section`, `enabled`, `alias`, `interface`, `v6face`, `account`, `account_label`, and `ua_type`; interfaces are validated names, not full UCI objects. |
+| `save_instance` | `section`, `enabled`, `alias`, `interface`, `v6face`, `account`, `ua_type` | `section` and `restart_required`. Account references must exist; `enabled` remains the compatibility string `0` or `1`. |
+| `delete_instance` | `section` | `section` and `restart_required`. |
+| `service_status` | none | `enabled` and `running`. |
+| `service_action` | `action` | `action`, `enabled`, and `running`; `action` is exactly `start`, `stop`, `restart`, `enable`, or `disable`, and always targets only `multilogin`. |
+| `get_diagnostics` | none | `dependencies`, `service`, `log`, `script_recovery_required`, `network_recovery_required`, and `owned_generation`; `dependencies` has exactly boolean `bash`, `curl`, `mwan3`, and `jsonfilter`, `service` has exactly boolean `enabled` and `running`, and `log` has exactly boolean `present` plus integer `size`. No command output is returned. |
+| `get_logs` | none | `content` and `truncated`; returns at most the final 500 lines and 65536 bytes from the fixed MultiLogin log after defensive secret-pattern redaction. |
+| `clear_logs` | none | `cleared=true`; truncates only the fixed regular non-symlink MultiLogin log. |
+| `quick_setup` | `base_iface`, `count` | `generation`, `base_iface`, `count`, and exact owned `interfaces`; each interface has exactly `name`, `device`, and integer `metric`, and `count` is an integer from 1 through 10. Safe legacy `result`, `base_iface`, `count`, and `interfaces` are duplicated. |
+| `list_auto` | none | `generation`, `base_iface`, `count`, exact owned `interfaces` using the same three-field schema, and `recovery_required`; it never discovers ownership by prefix. |
+| `remove_auto` | none | The new `generation`, `count=0`, and an empty `interfaces` array; removes only IDs in the current ownership state. |
+| `network_recover` | none | `generation` and `recovery_required`; it accepts no recovery plan from the browser. |
+
+Settings integer bounds are: `retry_interval` and `check_interval` 1–3600, `max_retry_delay` 1–86400 and not below `retry_interval`, and `already_logged_delay` 1–86400. `log_level` is exactly `debug`, `info`, `notice`, `warning`, or `error`. Existing/new section identifiers and interface values must match their fixed UCI-safe token grammar and the expected section type; callers cannot address another package or an anonymous expression. Usernames remain non-empty UTF-8 strings without control characters and at most 256 bytes; aliases are at most 128 UTF-8 bytes. Passwords are write-only strings of at most 4096 bytes; they may contain spaces and punctuation but not U+0000, CR, or LF, are never placed in argv or a temporary file, and are cleared from shell variables after the UCI write. Browser reads return only `password_set`.
+
+The fixed token and creation rules are:
+
+- An account or instance `section` supplied by a client is either the empty string or matches `[A-Za-z_][A-Za-z0-9_]{0,63}`. `@type[index]`, dots, slashes, whitespace, shell metacharacters, package prefixes, and all other forms are invalid. A non-empty ID must already exist in `multilogin` with exactly the expected `account` or `instance` type.
+- Empty `section` is accepted only by `save_account` and `save_instance`. It means create exactly one section of the corresponding type with `uci add multilogin account|instance`, validate the returned generated ID against the same grammar, and return that ID. Empty `section` is invalid for both delete methods and every action method. A failed validation or write leaves no newly committed section.
+- `interface`, optional non-empty `v6face`, and `base_iface` match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}` (1–15 ASCII bytes). Empty `v6face` means absent. Empty `interface` or `base_iface`, a leading punctuation character, and every value over 15 bytes are invalid.
+- Server-reserved ownership IDs have the exact spellings listed below and are not accepted as client-selected section IDs. Clients never supply a generated network/firewall/mwan3 object ID.
+
+All Phase 7 success payload types are exact; no additional fields are emitted inside these `data` objects or their array items:
+
+| Method | Exact JSON types and value constraints |
+| --- | --- |
+| `get_overview` | `settings_enabled`, `service_enabled`, `service_running`, and `network_recovery_required` are booleans; all four `*_count` fields are non-negative integers. |
+| `get_settings` | `enabled` is string `"0"` or `"1"`; `log_level` is a string enum; the four interval/delay fields are integers within the bounds above. |
+| `save_settings` | Same six typed settings fields as `get_settings`; `restart_required` is boolean and is always true after a changed save and false for `no_change`. |
+| `list_accounts` | `accounts` is an array. Every item has string `section`, `alias`, and `username`, boolean `password_set`, and non-negative integer `reference_count`. |
+| `save_account` | `section` is the resulting non-empty section-ID string; `password_set` is boolean. |
+| `delete_account` | `section` is the deleted section-ID string. On `conflict`, `data.references` is a lexically sorted array of non-empty instance section-ID strings and is the only failure detail. |
+| `list_instances` | `instances` is an array and `interfaces` is a lexically sorted array of unique interface-name strings. Every instance item has strings `section`, `enabled` (`"0"` or `"1"`), `alias`, `interface`, `v6face`, `account`, `account_label`, and `ua_type` (`pc` or `mobile`). |
+| `save_instance`, `delete_instance` | `section` is the resulting/deleted section-ID string and `restart_required` is boolean; it is true after a changed mutation and false for `no_change`. |
+| `service_status` | `enabled` and `running` are booleans. |
+| `service_action` | `action` is the requested allowlisted action string; `enabled` and `running` are booleans describing the checked post-action state. |
+| `get_diagnostics` | `dependencies` is an object containing exactly boolean `bash`, `curl`, `mwan3`, and `jsonfilter`; `service` contains exactly boolean `enabled` and `running`; `log` contains exactly boolean `present` and non-negative integer `size`; both recovery fields are booleans. `owned_generation` is a non-negative integer when state is valid/synthesized and JSON `null` when network state is unreadable or invalid. |
+| `get_logs` | `content` is a valid UTF-8 string and `truncated` is boolean. |
+| `clear_logs` | `cleared` is boolean and is true on successful truncation or when the fixed log is absent. |
+| `quick_setup` | `generation` and `count` are non-negative integers (`count` 1–10), `base_iface` is a string, and `interfaces` is an array of exact items containing string `name`, string `device`, and integer `metric`. |
+| `list_auto` | Same four fields and item types as `quick_setup`, with `count` 0–10, plus boolean `recovery_required`. |
+| `remove_auto` | `generation` is a non-negative integer, `count` is integer `0`, and `interfaces` is an empty array. |
+| `network_recover` | `generation` is a non-negative integer and `recovery_required` is boolean. |
+
+The safe v3.x compatibility duplicates retain the same JSON types as their authoritative fields. Legacy `result` and sanitized `output` are strings, action `legacy_code` is an integer, `status` is a bounded string, and `success` is boolean. No numeric field is serialized as a string.
+
+Log reads are fail-closed and use this exact redaction order. Only the fixed `/var/log/multilogin.log` may be opened, without following a symlink. An absent log succeeds with empty `content`; a non-regular, unreadable, changing-during-read, or invalid-UTF-8 log returns `internal_error` with empty `data` and no bytes from the file. On valid input, process complete lines as follows:
+
+1. Match case-insensitively any assignment/header whose ASCII key is `authorization`, `cookie`, `set-cookie`, or contains `password`, `passwd`, `secret`, or `token`. A key starts at the beginning of the line or after a non-`[A-Za-z0-9_]` byte, may be enclosed in one matching ASCII quote pair, and is followed by optional ASCII space/tab and `:` or `=`. Replace the entire matching line, including its original line ending, with exactly `[REDACTED]\n`.
+2. Obtain every non-empty current `account.password` as server-side bytes. In all remaining lines, replace every exact literal occurrence of each password with `[REDACTED]`. Passwords are never inserted into a regex, argv, log, RPC field, or diagnostic.
+3. Replace network identifiers in this order using ASCII byte boundaries. First replace a maximal token matching six hexadecimal octets separated consistently by `:` or `-`, or exactly 12 contiguous hexadecimal digits bounded by non-hexadecimal bytes, with `[MAC]`. Next replace a maximal digit/dot token having exactly four 1–3 digit decimal components, each 0–255, with `[IP]`. Finally replace any maximal `[0-9A-Fa-f:.]+` token that contains at least two colons and at least two hexadecimal digits with `[IP]`. The intentionally broad final rule may also hide timestamp-like text; fail-closed privacy is preferred to diagnostic fidelity.
+4. Repeat the sensitive-key, literal-password, MAC, IPv4, and colon-token scans on the redacted result. If any match remains, or password enumeration/scanning fails, return `internal_error` with empty `data`; never return the partially redacted or original text.
+5. From the verified redacted text return at most the final 500 complete lines and at most 65536 encoded bytes, dropping an initial partial UTF-8 character/line if necessary. `truncated=true` exactly when any verified redacted content was omitted.
+
+The fixed action RPCs never return an IP address or MAC address. Their allowlisted section/interface/account-reference identifiers and aliases are configuration labels, not observed network identifiers; child output and portal response fields remain excluded.
+
+`clear_logs` uses the same fixed-path, regular-file, non-symlink checks and never creates a missing log. It returns success for an absent log and otherwise reports success only after checked truncation; it returns no previous content.
+
+Configuration mutations validate the complete request before the first write, acquire `/var/lock/multilogin-config.lock`, use checked UCI operations and commits, and return `internal_error` without claiming success on a failed write. `save_settings`, `save_instance`, and `delete_instance` return `restart_required=true`; the UI performs a separate explicit `service_action(restart)` rather than gaining `luci.setInitAction`. The compatibility `quick_setup.sh` calls only the fixed backend, retains positional `<base_interface> <count>` and exit `0/1`, and never edits UCI itself.
+
+Removing implicit restart from `save_instance`/`delete_instance` is the deliberate D-013 v3 side-effect exception. Their safe legacy response keys remain, but an already-open v2 page is not promised automatic application after Phase 7 ACL replacement and must refresh into the v3 Configuration page. No compatibility grant restores `luci.setInitAction` merely for that cached page.
+
+The exact `network-state.json` schema is:
+
+```json
+{"schema":1,"generation":0,"base_iface":"","count":0,"firewall_zone":"","network_sections":[],"firewall_networks":[],"mwan3_sections":[],"mwan3_policy":"balanced","mwan3_members":[]}
+```
+
+There are no additional keys. `schema` is integer `1`; `generation` and `count` are non-negative integers; `base_iface`, `firewall_zone`, and `mwan3_policy` are strings; and the four remaining fields are arrays of strings. All arrays contain unique validated UCI section or list-value IDs in deterministic lexical order. A non-empty plan uses the bounded reserved IDs `ml3_dev_1`…`ml3_dev_10`, `ml3_if_1`…`ml3_if_10`, `ml3_member_1`…`ml3_member_10`, and `ml3_zone`; before first use the planner proves each target is absent, and afterward it accepts it only when the exact prior ownership state records it. These names stay within interface-length limits while the independent ownership generation remains monotonic. The backend creates and owns the dedicated `ml3_zone` firewall zone and never edits or renames an existing WAN zone. It requires an existing named `balanced` mwan3 policy, adds/removes only the exact recorded `mwan3_members` list values, never owns or deletes that policy, and never removes another member. Legacy `auto_*` objects and colliding reserved IDs without a matching state record remain unowned and untouched; a collision fails before writes.
+
+Network state loading is fixed and fail-closed:
+
+- If `network-state.json` is absent and no journal exists, reads synthesize the canonical generation-0 empty state shown above without writing a file. `list_auto` succeeds with that empty state and `recovery_required=false`; the first successful mutation atomically creates generation 1.
+- If state is absent but a valid journal exists, recovery uses the same synthetic generation-0 empty state as the durable input. It can match only a valid first transaction whose `before` is canonical generation 0; any other journal reduces to `manual_recovery`.
+- An existing state path must be a root-owned mode-0600 regular non-symlink file containing exactly one valid UTF-8 JSON object that satisfies the schema and canonical ownership relations. Unreadable, malformed, duplicate-key, unknown-key, wrong-type, noncanonical, unsafe-mode/owner, or trailing-data state is invalid and is never replaced automatically.
+- A journal path, when present, has the same owner/mode/regular-file/UTF-8/single-object/exact-schema requirements. Invalid state or journal sets network recovery required, blocks `quick_setup`, `remove_auto`, and controller startup, and causes `network_recover` to fail with `code=manual_recovery`; the files are retained for root inspection. No prefix/live-discovery repair is attempted.
+- With invalid state, `list_auto` fails with `manual_recovery` and empty `data`; `get_overview` remains available with `owned_network_count=0` and `network_recovery_required=true`; `get_diagnostics` returns `owned_generation=null` and `network_recovery_required=true`. With valid/synthesized state but an unresolved or invalid journal, `list_auto` returns the trusted state plus `recovery_required=true`, overview/diagnostics return its count/generation plus a true recovery flag, and all mutations remain blocked.
+- With valid/synthesized state and no journal, `network_recover` succeeds as `no_change` with the current generation and `recovery_required=false`. With a valid journal it executes only the ordered pure-reducer decision below. `manual_recovery` never deletes, rewrites, or quarantines either state file.
+
+Schema 1 expands every non-empty ownership state into the following deterministic UCI plan. All option values below are strings; list values retain the shown order. There are no additional options on an owned section:
+
+| Package / section | Exact type and options for index `N` |
+| --- | --- |
+| `network.ml3_dev_N` | Type `device`; `type=macvlan`, `ifname=STATE.base_iface`, `name=ml3_dev_N`, `mode=private`, `ipv6=0`. |
+| `network.ml3_if_N` | Type `interface`; `proto=dhcp`, `device=ml3_dev_N`, `metric=10+N` serialized in base-10. |
+| `firewall.ml3_zone` | Type `zone`; `name=ml3`, `input=REJECT`, `output=ACCEPT`, `forward=REJECT`, `masq=1`, `mtu_fix=1`; ordered `network` list is exactly `ml3_if_1` through `ml3_if_STATE.count`. |
+| `mwan3.ml3_if_N` | Type `interface`; `enabled=1`, `family=ipv4`, `initial_state=offline`, `track_method=ping`, `reliability=1`, `count=1`, `size=56`, `max_ttl=60`, `timeout=2`, `interval=5`, `failure_interval=5`, `recovery_interval=5`, `down=2`, `up=3`; ordered `track_ip` list is exactly `223.5.5.5`, `114.114.114.114`. |
+| `mwan3.ml3_member_N` | Type `member`; `interface=ml3_if_N`, `metric=1`, `weight=5`. |
+| `mwan3.balanced` | Must already be type `policy`. MultiLogin owns no policy option or section; its only allowed mutation is deleting/adding the exact `ml3_member_N` values recorded by the before/after `mwan3_members` arrays in `use_member`. Every other value and its relative order are preserved. |
+
+For a valid state, `network_sections`, `firewall_networks`, `mwan3_sections`, and `mwan3_members` are not arbitrary snapshots: they equal exactly the IDs derived above from `count`; the canonical empty state is the sole exception. `firewall_networks` records the owned zone list values even though the entire dedicated zone section is owned. The planner derives the complete owned-section content from `schema`, `base_iface`, and `count`; it never copies options from an unowned section.
+
+Before a new transaction, the backend checks that every currently recorded owned section and owned list value equals this derived before-plan, that no reserved target outside the before-plan exists, and that `balanced` exists with type `policy`. Drift, a collision, or a missing/wrong-type policy fails before the journal or any UCI write. During a journaled recovery, reserved IDs present in either its validated before-plan or after-plan are recognized as transaction objects; no other ID is. Applying either plan deletes only that before/after union, recreates the selected plan's owned sections exactly, removes only the union's member values from `balanced.use_member`, then appends the selected plan's members while preserving every unowned member's relative order. This reconstructs the exact owned configuration without claiming ownership of or restoring unrelated UCI content.
+
+The exact `network-journal.json` schema is:
+
+```json
+{"schema":1,"operation":"apply","state":"prepared","before":{"schema":1,"generation":0,"base_iface":"","count":0,"firewall_zone":"","network_sections":[],"firewall_networks":[],"mwan3_sections":[],"mwan3_policy":"balanced","mwan3_members":[]},"after":{"schema":1,"generation":1,"base_iface":"eth0","count":1,"firewall_zone":"ml3_zone","network_sections":["ml3_dev_1","ml3_if_1"],"firewall_networks":["ml3_if_1"],"mwan3_sections":["ml3_if_1","ml3_member_1"],"mwan3_policy":"balanced","mwan3_members":["ml3_member_1"]}}
+```
+
+There are no additional journal keys. `schema` is integer `1`, `operation` and `state` are strings restricted to the enums below, and `before` and `after` are complete exact ownership-state objects. For both operations, `after.generation = before.generation + 1`. An `apply` after-state has `count` 1–10, the validated requested non-empty `base_iface`, `firewall_zone="ml3_zone"`, and exactly the reserved IDs for indices 1 through `count`: two network sections (`ml3_dev_N`, `ml3_if_N`), one firewall network (`ml3_if_N`), two mwan3 sections (`ml3_if_N`, `ml3_member_N`), and one policy member (`ml3_member_N`) per index. A `remove` after-state is the canonical empty state: `base_iface=""`, `count=0`, `firewall_zone=""`, all four arrays empty, and `mwan3_policy="balanced"`, with only its generation advanced. Both before and after otherwise satisfy the complete state schema, uniqueness, sorting, reserved-ID, and ownership rules.
+
+Journal states are `prepared`, `network_committed`, `firewall_committed`, `mwan3_committed`, `services_reloaded`, or `rollback_required`. Given a journal and the currently durable ownership state, the pure reducer applies this ordered decision table and returns exactly one result:
+
+1. If either object fails its exact schema/type checks, the before/after generation relation is invalid, the operation-specific after-state is invalid, or any ID violates its reserved-ID/ownership relation, return `manual_recovery`.
+2. Otherwise, if durable state equals `after` byte-for-byte after canonical deterministic serialization, return `cleanup_committed`, regardless of journal state.
+3. Otherwise, if journal state is `rollback_required` and durable state equals `before` canonically, return `restore_before`.
+4. Otherwise, if journal state is one of `prepared`, `network_committed`, `firewall_committed`, `mwan3_committed`, or `services_reloaded` and durable state equals `before` canonically, return `finish_after`.
+5. Otherwise return `manual_recovery`.
+
+The network schemas contain no content hashes, so hashes are neither validated nor consulted by this reducer. Canonical equality compares every declared field and array element after exact-schema validation; no prefix scan, live UCI discovery, or undeclared field is a recovery input. The ordering above makes `cleanup_committed`, `restore_before`, and `finish_after` mutually exclusive.
+
+The backend writes the journal before the first UCI mutation, applies only the exact before/after plan, commits network, firewall, and mwan3 in that order, reloads only those three services, atomically commits the new ownership state, then removes the journal. A checked failure records `rollback_required` and reconstructs the exact deterministic `before` plan; unresolved recovery retains the journal and blocks `quick_setup`, `remove_auto`, and controller startup. Init invokes the fixed no-input network recovery before starting the controller. Actual UCI commit/reload ordering, interruption, reboot recovery, and device connectivity remain mandatory Phase 9 checks; unattended tests cover only request/ID validation, plan selection, reducer totality, source ordering, and compileability.
+
+LuCI routes are exactly `overview`, `configuration`, `network`, `scripts`, and `diagnostics`. Old `settings`, `accounts`, `interfaces`, `script`, and `log` routes are hidden server-side aliases to the new routes and do not load their old implementations. Every page uses only named `multilogin` RPC methods and supplies loading, empty, error, and retry states. The ACL contains no browser UCI access, no file grant, no `luci.setInitAction`, and no generic `file` or `service` object. Read access contains only non-mutating overview/list/status/diagnostic/log/check methods; login, logout, service actions, configuration saves, log clearing, script mutations, and network transactions are write access.
 
 ### 7.4 LuCI, menu, ACL, and cached-client transition
 
