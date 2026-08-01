@@ -2,48 +2,35 @@ name: Reusable OpenWrt SDK build
 
 on:
   workflow_call:
-    inputs:
-      sdk_version:
-        description: Official OpenWrt SDK release version.
-        required: true
-        type: string
-      sdk_url:
-        description: HTTPS URL of the official SDK archive.
-        required: true
-        type: string
-      sdk_sha256:
-        description: SHA-256 from the matching official sha256sums file.
-        required: true
-        type: string
-      sdk_archive_extension:
-        description: Archive suffix accepted by tar on the runner.
-        required: true
-        type: string
-      feed_branch:
-        description: OpenWrt feed branch matching the SDK release line.
-        required: true
-        type: string
-      artifact_name:
-        description: Deterministic build-output artifact name.
-        required: true
-        type: string
-      release_style:
-        description: OpenWrt package release marker style (plain or r).
-        required: true
-        type: string
-      package_format:
-        description: Package archive format to build and inspect (ipk or apk).
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
   compile:
-    name: Compile ${{ inputs.sdk_version }} x86_64 witness
+    name: Compile ${{ matrix.sdk_version }} x86_64 witness
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk_version: 24.10.8
+            sdk_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: ac4a0405d2eea821b06f93c14ba13ffa90ad0457648903df7dde02570027ab21
+            sdk_archive_extension: .tar.zst
+            feed_branch: openwrt-24.10
+            artifact_name: luci-app-multilogin-openwrt-24.10.8-x86-64
+            package_format: ipk
+            release_style: r
+          - sdk_version: 25.12.5
+            sdk_url: https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
+            sdk_archive_extension: .tar.zst
+            feed_branch: openwrt-25.12
+            artifact_name: luci-app-multilogin-openwrt-25.12.5-x86-64
+            package_format: apk
+            release_style: r
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -55,8 +42,8 @@ jobs:
         id: sdk-cache
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}
-          key: openwrt-sdk-${{ runner.os }}-x86-64-${{ inputs.sdk_version }}-${{ inputs.sdk_sha256 }}
+          path: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}${{ matrix.sdk_archive_extension }}
+          key: openwrt-sdk-${{ runner.os }}-x86-64-${{ matrix.sdk_version }}-${{ matrix.sdk_sha256 }}
 
       - name: Install bounded host build tooling
         run: |
@@ -77,19 +64,22 @@ jobs:
 
       - name: Download and verify official SDK
         env:
-          SDK_URL: ${{ inputs.sdk_url }}
-          SDK_SHA256: ${{ inputs.sdk_sha256 }}
+          SDK_URL: ${{ matrix.sdk_url }}
+          SDK_SHA256: ${{ matrix.sdk_sha256 }}
         run: |
           set -eu
-          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}"
+          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ matrix.sdk_version }}${{ matrix.sdk_archive_extension }}"
           case "$SDK_URL" in
             https://downloads.openwrt.org/releases/*) ;;
             *) echo 'SDK URL must use the official OpenWrt releases host' >&2; exit 1 ;;
           esac
           case "$SDK_SHA256" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo 'SDK checksum must be lowercase SHA-256' >&2; exit 1 ;;
+            '' | *[!0-9a-f]*) echo 'SDK checksum must be lowercase SHA-256' >&2; exit 1 ;;
           esac
+          test "${#SDK_SHA256}" -eq 64 || {
+            echo 'SDK checksum must contain exactly 64 characters' >&2
+            exit 1
+          }
           if [ ! -f "$SDK_ARCHIVE" ]; then
             curl --fail --show-error --location --proto '=https' --tlsv1.2 \
               --retry 2 --retry-all-errors --connect-timeout 15 --max-time 300 \
@@ -100,8 +90,8 @@ jobs:
       - name: Extract verified SDK
         run: |
           set -eu
-          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}"
-          SDK_ROOT="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}"
+          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ matrix.sdk_version }}${{ matrix.sdk_archive_extension }}"
+          SDK_ROOT="$RUNNER_TEMP/multilogin-sdk-${{ matrix.sdk_version }}"
           rm -rf "$SDK_ROOT"
           mkdir -p "$SDK_ROOT"
           tar --extract --file "$SDK_ARCHIVE" --directory "$SDK_ROOT" --strip-components=1
@@ -110,38 +100,39 @@ jobs:
 
       - name: Integrate required OpenWrt package feeds
         env:
-          FEED_BRANCH: ${{ inputs.feed_branch }}
-        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+          FEED_BRANCH: ${{ matrix.feed_branch }}
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}
         run: |
           set -eu
           case "$FEED_BRANCH" in
-            openwrt-23.05 | openwrt-24.10 | openwrt-25.12) ;;
+            openwrt-24.10 | openwrt-25.12) ;;
             *) echo 'unsupported OpenWrt feed branch' >&2; exit 1 ;;
           esac
           sed -i \
             -e "s#;openwrt-[0-9.][0-9.]*#;$FEED_BRANCH#g" \
             feeds.conf.default
-          timeout 180s ./scripts/feeds update packages luci routing
-          timeout 120s ./scripts/feeds install -p packages bash curl jsonfilter
-          timeout 120s ./scripts/feeds install -p luci luci-base
-          timeout 120s ./scripts/feeds install -p routing mwan3
+          timeout 180s ./scripts/feeds update base packages luci routing
+          # Install definitions from the updated feeds so transitive build
+          # dependencies (for example lucihttp's Lua headers) are available.
+          # Only the selected package dependency graph is compiled below.
+          timeout 120s ./scripts/feeds install -a
 
       - name: Add package feed and compile
-        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}
         run: |
           set -eu
           umask 022
           mkdir -p package/multilogin
           ln -s "$GITHUB_WORKSPACE" package/multilogin/luci-app-multilogin
           timeout 120s make defconfig
-          timeout 900s make package/luci-app-multilogin/compile V=s
+          timeout 1200s make package/luci-app-multilogin/compile -j2 V=s
 
       - name: Stage package build output and checksum
         id: artifact
         env:
-          PACKAGE_FORMAT: ${{ inputs.package_format }}
-          RELEASE_STYLE: ${{ inputs.release_style }}
-        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+          PACKAGE_FORMAT: ${{ matrix.package_format }}
+          RELEASE_STYLE: ${{ matrix.release_style }}
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}
         run: |
           set -eu
           case "$PACKAGE_FORMAT:$RELEASE_STYLE" in
@@ -172,7 +163,21 @@ jobs:
             apk)
               APK_TOOL="$PWD/staging_dir/host/bin/apk"
               test -x "$APK_TOOL"
-              cp "$APK_TOOL" artifact/apk-tool
+              APK_HOST_BIN="$(dirname "$APK_TOOL")"
+              APK_HOST_LIB="$APK_HOST_BIN/../lib"
+              mkdir -p artifact/apk-runtime/bin artifact/apk-runtime/lib
+              cp "$APK_HOST_BIN/.apk.bin" artifact/apk-runtime/bin/apk.bin
+              for runtime in ld-linux-x86-64.so.2 libc.so.6 libpthread.so.0 runas.so; do
+                cp "$APK_HOST_LIB/$runtime" artifact/apk-runtime/lib/
+              done
+              printf '%s\n' \
+                '#!/bin/sh' \
+                'tool_root=$(CDPATH= cd -- "$(dirname -- "$0")/apk-runtime" && pwd)' \
+                'export RUNAS_ARG0="$0"' \
+                'export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$tool_root/lib/runas.so"' \
+                'exec "$tool_root/lib/ld-linux-x86-64.so.2" --library-path "$tool_root/lib" "$tool_root/bin/apk.bin" "$@"' \
+                >artifact/apk-tool
+              chmod 0755 artifact/apk-tool
               sh "$GITHUB_WORKSPACE/tools/release/inspect-artifact.sh" \
                 --apk "$PWD/artifact/$(basename "$1")" \
                 --apk-tool "$PWD/artifact/apk-tool" \
@@ -186,7 +191,7 @@ jobs:
       - name: Upload package build output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ inputs.artifact_name }}
+          name: ${{ matrix.artifact_name }}
           path: ${{ steps.artifact.outputs.artifact_path }}
           if-no-files-found: error
           retention-days: 7

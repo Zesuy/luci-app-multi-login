@@ -8,9 +8,8 @@
 
 | 输入 | 固定身份 | 当前离线证据 |
 | --- | --- | --- |
-| v3 / OpenWrt 23.05 | `luci-app-multilogin_3.0.0-rc.1-1_all.ipk` | SHA-256 `9f324884fad024a067c6116e69c7e809dc3c37186d2bf5a22145b584f79274f4` |
-| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.1-r1_all.ipk` | SHA-256 `f654f0655f1781822d391186a1bc663cd06f8a12acb4bd9529433b10120c9671` |
-| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc1-r1.apk` | SHA-256 `cf35d9b4f6e364a70a19502a3a338ea3fbd4236a3618f1ec6db02b54cc6e0092` |
+| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.1-r4_all.ipk` | CI artifact checksum required before device acceptance |
+| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc1-r4.apk` | CI artifact checksum required before device acceptance |
 | 支持的 v2 降级包 | `luci-app-multilogin_2.2.0-4_all.ipk`，源码提交 `fb272e8285c65415dea8a9a359a4204b94be06a0` | 使用官方 23.05.6 x86_64 SDK 离线重建；SHA-256 `bd3de0f4dfbd13a9bd84ab8f63f9875dcd99c232ad23a53d9009dba5dc2f4f1e` |
 
 这些哈希描述本次本地构建，不替代发布签名。项目当前没有已冻结的签名密钥或签名格式；若产品要求密码学签名，必须先由产品所有者做出决定，不能临时生成并宣称为既有信任根。
@@ -138,8 +137,8 @@ pgrep -af '/etc/multilogin/login_control.bash'
 | ID | 场景 | 关键验收 |
 | --- | --- | --- |
 | `PKG-01` | 23.05 全新安装 | 服务被 enable 但不强制 start；`global.enabled=0`；没有占位账号/实例；安装文件、conffile 和模式与 IPK 一致。 |
-| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.1-r1` 控制版本。 |
-| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc1-r1`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
+| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.1-r4` 控制版本。 |
+| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc1-r4`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
 | `PKG-03` | v2 stock 升级，disabled/stopped | UCI 与时间字段保留；服务仍 disabled/stopped；stock 脚本进入 Managed。 |
 | `PKG-04` | v2 stock 升级，enabled/stopped | enabled 与 running 独立保留；不得隐式启动。 |
 | `PKG-05` | v2 stock 升级，enabled/running | 只在先前 running 时恢复运行；无重复 daemon。 |
@@ -266,10 +265,10 @@ dual-stack 变体只允许增加已核对的 `--v6face <IFACE>`。操作员在�
 
 | ID | 场景 | 关键验收 |
 | --- | --- | --- |
-| `GH-01` | 默认分支普通 CI | run 来自本仓库默认分支 push/目标 SHA；offline/static/pure-logic gate 成功；普通 CI 不下载 SDK、不产出 IPK/APK。 |
+| `GH-01` | 默认分支普通 CI | run 来自本仓库默认分支 push/目标 SHA；offline/static/pure-logic gate 成功；package scope 额外完成 24.10 IPK 与 25.12 APK，shell-only/docs 跳过 SDK。 |
 | `GH-02` | 后续 shell-only CI | 只有 `cqu-portal.sh`/允许的 changelog 路径变化；API 仍为 3、SemVer 严格增加；SDK job 被跳过且 Raw 内容来自 main。此单元在有真实后续 shell 版本时执行。 |
-| `GH-03` | 手动 Release validation | 输入 tag/base ref 正确；同一目标 SHA 的 offline gate、23.05/24.10 IPK、25.12 APK 与精确只读制品检查全部成功；下载 artifact 哈希匹配。 |
-| `GH-04` | protected draft workflow | `release` environment 和审批人正确；验证 Release validation 的 run path/event/repository/branch/SHA；只创建 draft；两种 IPK、一个 APK 和 checksums 均存在。 |
+| `GH-03` | 手动 Release validation | 输入 tag/base ref 正确；同一目标 SHA 的 offline gate、24.10 IPK、25.12 APK 与精确只读制品检查全部成功；下载 artifact 哈希匹配。 |
+| `GH-04` | protected draft workflow | `release` environment 和审批人正确；验证 Release validation 的 run path/event/repository/branch/SHA；只创建 draft；一个 IPK、一个 APK 和 checksums 均存在。 |
 | `GH-05` | stable publication | 仅在设备 gate、soak、产品 UX 和所有发布决定接受后，另行授权 tag/Release；不得由当前清单自动触发。 |
 
 ## 8. Soak 验收

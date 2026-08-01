@@ -89,13 +89,12 @@ jobs:
         run: |
           find release-artifacts -type f -name 'luci-app-multilogin_*.ipk' -print | LC_ALL=C sort > ipks.txt
           find release-artifacts -type f -name 'luci-app-multilogin-*.apk' -print | LC_ALL=C sort > apks.txt
-          test "$(wc -l < ipks.txt)" -eq 2
+          test "$(wc -l < ipks.txt)" -eq 1
           test "$(wc -l < apks.txt)" -eq 1
           while IFS= read -r ipk; do
             checksums="$(dirname "$ipk")/sha256sums.txt"
             test -f "$checksums"
             case "$ipk" in
-              *openwrt-23.05.*) release_style=plain ;;
               *openwrt-24.10.*) release_style=r ;;
               *) echo "unknown SDK artifact path: $ipk" >&2; exit 1 ;;
             esac
@@ -103,12 +102,21 @@ jobs:
               --tag "$RELEASE_TAG" --release-style "$release_style"
             basename "$ipk" >> ipk-names.txt
           done < ipks.txt
-          test "$(sort -u ipk-names.txt | wc -l)" -eq 2
+          test "$(sort -u ipk-names.txt | wc -l)" -eq 1
           apk=$(cat apks.txt)
           checksums="$(dirname "$apk")/sha256sums.txt"
           apk_tool="$(dirname "$apk")/apk-tool"
+          apk_runtime="$(dirname "$apk")/apk-runtime"
           test -f "$checksums"
-          test -x "$apk_tool"
+          test -f "$apk_tool"
+          test -f "$apk_runtime/bin/apk.bin"
+          test -f "$apk_runtime/lib/ld-linux-x86-64.so.2"
+          test -f "$apk_runtime/lib/libc.so.6"
+          test -f "$apk_runtime/lib/libpthread.so.0"
+          test -f "$apk_runtime/lib/runas.so"
+          # actions/upload-artifact does not preserve executable modes.
+          chmod 0755 "$apk_tool" "$apk_runtime/bin/apk.bin" \
+            "$apk_runtime/lib/ld-linux-x86-64.so.2"
           case "$apk" in
             *openwrt-25.12.*) release_style=r ;;
             *) echo "unknown SDK artifact path: $apk" >&2; exit 1 ;;

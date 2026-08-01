@@ -330,6 +330,18 @@ function docsTests() {
   pass('README and project overview contain no credential-bearing examples');
 }
 
+function jshnNounsetCompatibilityTests() {
+  const initializer = 'JSON_PREFIX=${JSON_PREFIX-}\nJSON_UNSET=${JSON_UNSET-}';
+  const sourceAt = config.indexOf('. "$ML_JSHN" || exit 1');
+  const initializerAt = config.indexOf(initializer);
+  const overrideAt = config.indexOf('json_init() {', sourceAt);
+  assert.ok(initializerAt >= 0 && initializerAt < sourceAt,
+    'configuration RPC backend does not initialize jshn state before sourcing under nounset');
+  assert.ok(overrideAt > sourceAt && config.indexOf('JSON_UNSET=', overrideAt) > overrideAt,
+    'configuration RPC backend does not restore JSON_UNSET after every jshn cleanup');
+  pass('configuration RPC backend restores all jshn cleanup state under nounset after rpcd exec');
+}
+
 rpcSurfaceTests();
 browserBoundaryTests();
 tokenAndRequestTests();
@@ -340,4 +352,5 @@ transactionSafetyTests();
 logBoundaryTests();
 aclAndMenuTests();
 docsTests();
+jshnNounsetCompatibilityTests();
 process.stdout.write(`${checks} Phase 7 static/pure checks passed.\n`);

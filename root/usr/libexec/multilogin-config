@@ -3,7 +3,7 @@
 # It is the only configuration/network helper called by rpcd or the legacy CLI.
 # BusyBox ash dynamic `ML_<field>` variables and deliberate compact checked
 # chains are used throughout this fixed dispatcher.
-# shellcheck disable=SC2015,SC2034,SC2086,SC2119,SC2120,SC2154,SC3043
+# shellcheck disable=SC2015,SC2034,SC2086,SC2119,SC2120,SC2154,SC3043,SC3045
 set -u
 LC_ALL=C
 export LC_ALL
@@ -19,8 +19,29 @@ ML_COMPAT_ERROR=0
 
 # shellcheck disable=SC1090
 . "$ML_POLICY" || exit 1
+# shellcheck disable=SC1091
+. /usr/lib/multilogin/fs-metadata.sh || exit 1
+# OpenWrt's jshn json_init() reads these internal variables before assigning
+# them. rpcd execs this helper without preserving the handler shell's local
+# values, so initialize them under nounset before every v3 RPC can emit a
+# response.
+JSON_PREFIX=${JSON_PREFIX-}
+JSON_UNSET=${JSON_UNSET-}
 # shellcheck disable=SC1090
 . "$ML_JSHN" || exit 1
+
+# jshn's json_load() expands generated `json_init;` text. Its stock json_init
+# unsets JSON_UNSET during cleanup and therefore breaks the next json_add_*
+# under nounset. Keep the OpenWrt implementation's state setup but restore
+# the cleanup accumulator after every generated initialization call.
+json_init() {
+	json_cleanup
+	export -n ${JSON_PREFIX}JSON_SEQ=0
+	export -- \
+		${JSON_PREFIX}JSON_CUR="J_V" \
+		${JSON_PREFIX}K_J_V=
+	JSON_UNSET=
+}
 
 ml_cleanup() {
 	if [ "$ML_LOCK_HELD" = 1 ]; then
@@ -100,7 +121,7 @@ ml_secure_json_file() {
 	local file
 	file=$1
 	[ -f "$file" ] && [ ! -L "$file" ] || return 1
-	[ "$(stat -c '%a %u %g' "$file" 2>/dev/null)" = '600 0 0' ] || return 1
+	[ "$(ml_fs_metadata "$file")" = '600 0 0' ] || return 1
 }
 
 ml_state_parse() {
@@ -676,7 +697,7 @@ ml_log_key_line() {
 
 ml_secure_log() {
 	[ -f "$ML_LOG" ] && [ ! -L "$ML_LOG" ] || return 1
-	[ "$(stat -c '%a %u %g' "$ML_LOG" 2>/dev/null)" = '600 0 0' ]
+	[ "$(ml_fs_metadata "$ML_LOG")" = '600 0 0' ]
 }
 
 ml_literal_replace() {
@@ -1221,7 +1242,7 @@ ml_get_diagnostics() {
 	size=0
 	if [ -e "$ML_LOG" ] && [ ! -L "$ML_LOG" ] && [ -f "$ML_LOG" ]; then
 		present=1
-		size=$(stat -c %s "$ML_LOG" 2>/dev/null || printf 0)
+		size=$(ml_fs_size "$ML_LOG" 2>/dev/null || printf 0)
 	fi
 	if [ -e /etc/multilogin/.script-state/activation.journal ] || [ -L /etc/multilogin/.script-state/activation.journal ]; then script_recovery=1; else script_recovery=0; fi
 	ml_emit 1 ok ''

@@ -13,6 +13,11 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(testDir, '..');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'multilogin-phase8.'));
 const read = (relative) => fs.readFileSync(path.join(repository, relative), 'utf8');
+const makefileSource = read('Makefile');
+const packageValue = (name) => makefileSource.match(new RegExp(`^${name}:=([^\\n]+)$`, 'm'))?.[1] ?? (() => { throw new Error(`missing ${name}`); })();
+const packageSourceVersion = packageValue('PKG_SOURCE_VERSION');
+const packageApkVersion = packageValue('PKG_APK_VERSION');
+const packageRelease = packageValue('PKG_RELEASE');
 const workflows = [
   '.github/workflows/ci.yml',
   '.github/workflows/release-check.yml',
@@ -59,10 +64,14 @@ function workflowPolicyTests() {
   const ci = sources['.github/workflows/ci.yml'];
   assert.match(ci, /timeout-minutes:\s*5/);
   assert.match(ci, /timeout 60s \.\/tests\/run\.sh/);
+  assert.match(ci, /^\s*push:\s*\n\s+branches:\s*\n\s+- main\s*$/m,
+    'feature-branch pushes duplicate pull-request CI instead of reserving push CI for main');
+  assert.match(ci, /^\s*pull_request:\s*$/m);
   assert.match(ci, /persist-credentials:\s*false/);
   assert.match(ci, /git diff --name-only[\s\S]{0,180}change-scope\.mjs --paths-file/);
-  assert.doesNotMatch(ci, /uses:\s*\.\/\.github\/workflows\/sdk-build\.yml/, 'ordinary CI still compiles SDK packages');
-  assert.doesNotMatch(ci, /sdk_url:|sdk_sha256:|package_format:/, 'ordinary CI still contains a release build matrix');
+  assert.match(ci, /sdk-build:[\s\S]{0,220}needs: \[scope, test\][\s\S]{0,120}if: needs\.scope\.outputs\.scope == 'package'[\s\S]{0,120}uses:\s*\.\/\.github\/workflows\/sdk-build\.yml/,
+    'package-scope CI does not run the canonical SDK matrix after the code gate');
+  assert.doesNotMatch(ci, /sdk_url:|sdk_sha256:|package_format:/, 'ordinary CI duplicates the canonical SDK matrix');
   assert.match(ci, /shell-only:[\s\S]{0,180}if: needs\.scope\.outputs\.scope == 'shell-only'/);
   assert.match(ci, /script-version\.mjs --base-script/);
 
@@ -76,9 +85,13 @@ function workflowPolicyTests() {
   assert.doesNotMatch(releaseCheck, /^\s+(?:push|pull_request|release):\s*$/m);
   const sdk = sources['.github/workflows/sdk-build.yml'];
   assert.match(sdk, /timeout-minutes:\s*30/);
-  for (const bound of ['timeout 180s ./scripts/feeds update', 'timeout 120s ./scripts/feeds install', 'timeout 900s make package/luci-app-multilogin/compile'])
+  for (const bound of ['timeout 180s ./scripts/feeds update', 'timeout 120s ./scripts/feeds install', 'timeout 1200s make package/luci-app-multilogin/compile'])
     assert.ok(sdk.includes(bound), `SDK workflow misses bound: ${bound}`);
-  assert.match(sdk, /umask 022[\s\S]{0,180}timeout 120s make defconfig[\s\S]{0,100}timeout 900s make package\/luci-app-multilogin\/compile/);
+  assert.match(sdk, /scripts\/feeds install -a/,
+    'SDK workflow installs only direct feed definitions and can miss transitive build dependencies');
+  assert.match(sdk, /scripts\/feeds update base packages luci routing/,
+    'SDK workflow omits the release-matched base feed that supplies Lua/ucode/rpcd definitions');
+  assert.match(sdk, /umask 022[\s\S]{0,180}timeout 120s make defconfig[\s\S]{0,120}timeout 1200s make package\/luci-app-multilogin\/compile -j2 V=s/);
   assert.match(sdk, /--connect-timeout 15 --max-time 300/);
 
   const release = sources['.github/workflows/release.yml'];
@@ -95,48 +108,57 @@ function workflowPolicyTests() {
   for (const provenance of [
     '.github/workflows/release-check.yml', '.event)" = workflow_dispatch', '.head_repository.full_name', '.head_branch',
   ]) assert.ok(release.includes(provenance), `release provenance check is missing ${provenance}`);
-  pass('ordinary CI and protected release validation have pinned, bounded, least-privilege policy');
+  pass('package-scope CI and protected release validation have pinned, bounded, least-privilege policy');
 }
 
 function sdkMatrixTests() {
   const releaseCheck = sources['.github/workflows/release-check.yml'];
-  const versions = [...releaseCheck.matchAll(/sdk_version:\s*([0-9.]+)/g)].map((match) => match[1]);
-  assert.equal(versions.length, 3, 'release validation must have exactly three SDK witnesses');
-  assert.equal(versions.some((value) => value.startsWith('23.05.')), true);
-  assert.equal(versions.some((value) => value.startsWith('24.10.')), true);
-  assert.equal(versions.some((value) => value.startsWith('25.12.')), true);
-  const urls = [...releaseCheck.matchAll(/sdk_url:\s*(https:\/\/\S+)/g)].map((match) => match[1]);
-  assert.equal(urls.length, 3);
-  assert.equal(urls.every((url) => /^https:\/\/downloads\.openwrt\.org\/releases\//.test(url)), true);
-  const hashes = [...releaseCheck.matchAll(/sdk_sha256:\s*([0-9a-f]+)/g)].map((match) => match[1]);
-  assert.equal(hashes.length, 3); assert.equal(hashes.every((hash) => hash.length === 64), true);
-  assert.equal(new Set(hashes).size, 3);
-  assert.match(releaseCheck, /artifact_name:\s*luci-app-multilogin-openwrt-23\.05\./);
-  assert.match(releaseCheck, /artifact_name:\s*luci-app-multilogin-openwrt-24\.10\./);
-  assert.match(releaseCheck, /artifact_name:\s*luci-app-multilogin-openwrt-25\.12\./);
-  assert.deepEqual([...releaseCheck.matchAll(/package_format:\s*(ipk|apk)$/gm)].map((match) => match[1]), ['ipk', 'ipk', 'apk']);
-  assert.deepEqual([...releaseCheck.matchAll(/release_style:\s*(plain|r)$/gm)].map((match) => match[1]), ['plain', 'r', 'r']);
+  assert.match(releaseCheck, /uses:\s*\.\/\.github\/workflows\/sdk-build\.yml/);
+  assert.doesNotMatch(releaseCheck, /sdk_version:|sdk_url:|sdk_sha256:|package_format:/,
+    'release validation duplicates the canonical SDK matrix');
 
   const sdk = sources['.github/workflows/sdk-build.yml'];
+  const versions = [...sdk.matchAll(/sdk_version:\s*([0-9.]+)/g)].map((match) => match[1]);
+  assert.deepEqual(versions, ['24.10.8', '25.12.5'], 'canonical matrix must contain only the IPK/APK boundary witnesses');
+  assert.doesNotMatch(sdk, /23\.05/);
+  const urls = [...sdk.matchAll(/sdk_url:\s*(https:\/\/\S+)/g)].map((match) => match[1]);
+  assert.equal(urls.length, 2);
+  assert.equal(urls.every((url) => /^https:\/\/downloads\.openwrt\.org\/releases\//.test(url)), true);
+  const hashes = [...sdk.matchAll(/sdk_sha256:\s*([0-9a-f]+)/g)].map((match) => match[1]);
+  assert.equal(hashes.length, 2); assert.equal(hashes.every((hash) => hash.length === 64), true);
+  assert.equal(new Set(hashes).size, 2);
+  assert.match(sdk, /artifact_name:\s*luci-app-multilogin-openwrt-24\.10\./);
+  assert.match(sdk, /artifact_name:\s*luci-app-multilogin-openwrt-25\.12\./);
+  assert.deepEqual([...sdk.matchAll(/package_format:\s*(ipk|apk)$/gm)].map((match) => match[1]), ['ipk', 'apk']);
+  assert.deepEqual([...sdk.matchAll(/release_style:\s*(plain|r)$/gm)].map((match) => match[1]), ['r', 'r']);
+
   assert.match(sdk, /sha256sum --check --status/);
+  assert.match(sdk, /case "\$SDK_SHA256" in[\s\S]{0,120}\*\[!0-9a-f\]\*/,
+    'SDK checksum validator does not reject non-lowercase-hex characters');
+  assert.match(sdk, /test "\$\{#SDK_SHA256\}" -eq 64/,
+    'SDK checksum validator does not require exactly 64 characters');
   assert.match(sdk, /sha256sum "\$\(basename "\$1"\)" >sha256sums\.txt/);
   assert.match(sdk, /inspect-artifact\.sh[\s\S]{0,240}--release-style "\$RELEASE_STYLE"/);
   assert.match(sdk, /package_format:/);
   assert.match(sdk, /openwrt-25\.12/);
   assert.match(sdk, /staging_dir\/host\/bin\/apk/);
   assert.match(sdk, /artifact\/apk-tool/);
+  assert.match(sdk, /artifact\/apk-runtime\/bin\/apk\.bin/);
+  assert.match(sdk, /ld-linux-x86-64\.so\.2 libc\.so\.6 libpthread\.so\.0 runas\.so/);
   assert.match(sdk, /if-no-files-found:\s*error/);
   const release = sources['.github/workflows/release.yml'];
-  assert.match(release, /test "\$\(wc -l < ipks\.txt\)" -eq 2/);
+  assert.match(release, /test "\$\(wc -l < ipks\.txt\)" -eq 1/);
   assert.match(release, /test "\$\(wc -l < apks\.txt\)" -eq 1/);
   assert.match(release, /inspect-artifact\.sh --ipk/);
   assert.match(release, /inspect-artifact\.sh --apk/);
-  assert.match(release, /openwrt-23\.05\.[\s\S]{0,100}release_style=plain/);
+  assert.match(release, /chmod 0755 "\$apk_tool" "\$apk_runtime\/bin\/apk\.bin"/,
+    'release validation does not restore executable modes lost by artifact upload');
+  assert.doesNotMatch(release, /openwrt-23\.05/);
   assert.match(release, /openwrt-24\.10\.[\s\S]{0,100}release_style=r/);
   assert.match(release, /openwrt-25\.12\.[\s\S]{0,100}release_style=r/);
   assert.match(release, /sort -u ipk-names\.txt \| wc -l/);
   assert.match(release, /luci-app-multilogin-\*\.apk/);
-  pass('23.05/24.10 IPK and 25.12 APK witnesses use pinned official SDKs and deterministic artifacts');
+  pass('24.10 IPK and 25.12 APK witnesses use pinned official SDKs and deterministic artifacts');
 }
 
 function metadataTests() {
@@ -234,17 +256,19 @@ function createArtifactFixture(label = 'valid', options = {}) {
   const control = path.join(fixture, 'control');
   const data = path.join(fixture, 'data');
   fs.mkdirSync(control, { recursive: true }); fs.mkdirSync(data, { recursive: true });
-  const controlVersion = options.releaseStyle === 'r' ? '3.0.0-rc.1-r1' : '3.0.0-rc.1-1';
+  const controlVersion = options.releaseStyle === 'r' ? `${packageSourceVersion}-r${packageRelease}` : `${packageSourceVersion}-${packageRelease}`;
   fs.writeFileSync(path.join(control, 'control'), [
     'Package: luci-app-multilogin', `Version: ${controlVersion}`, 'Architecture: all',
     `Depends: ${options.depends ?? 'libc, bash, curl, mwan3, jsonfilter, luci-base'}`, '',
   ].join('\n'));
   const migration = read('package/multilogin-migrate.sh');
+  const metadata = read('package/multilogin-fs.sh');
   for (const [archiveHook, sourceHook] of [
     ['preinst', 'preinst'], ['postinst-pkg', 'postinst'], ['prerm-pkg', 'prerm'], ['postrm', 'postrm'],
   ]) {
-    let body = `#!/bin/sh\nML_MIGRATION_EMBEDDED=1\n${migration}${read(`package/hooks/${sourceHook}.sh`)}`;
-    if (options.markerOnlyHook === archiveHook) body = '#!/bin/sh\nML_MIGRATION_EMBEDDED=1\n';
+    const metadataSeparator = archiveHook === 'prerm-pkg' ? '' : '\n';
+    let body = `#!/bin/sh\nML_FS_EMBEDDED=1\n${metadata}${metadataSeparator}ML_MIGRATION_EMBEDDED=1\n${migration}${read(`package/hooks/${sourceHook}.sh`)}`;
+    if (options.markerOnlyHook === archiveHook) body = '#!/bin/sh\nML_FS_EMBEDDED=1\nML_MIGRATION_EMBEDDED=1\n';
     fs.writeFileSync(path.join(control, archiveHook), body);
     fs.chmodSync(path.join(control, archiveHook), 0o755);
   }
@@ -252,7 +276,7 @@ function createArtifactFixture(label = 'valid', options = {}) {
     ['0600', 'etc/config/multilogin'], ['0755', 'etc/init.d/multilogin'],
     ...['login_control.bash', 'login.sh', 'check_status.sh', 'logout.sh', 'quick_setup.sh'].map((name) => ['0755', `etc/multilogin/${name}`]),
     ['0755', 'usr/lib/multilogin/cqu-portal.factory.sh'], ['0644', 'usr/lib/multilogin/script-policy.sh'],
-    ['0644', 'usr/lib/multilogin/config-policy.sh'], ['0755', 'usr/libexec/rpcd/multilogin'],
+    ['0644', 'usr/lib/multilogin/config-policy.sh'], ['0644', 'usr/lib/multilogin/fs-metadata.sh'], ['0755', 'usr/libexec/rpcd/multilogin'],
     ['0755', 'usr/libexec/multilogin-script'], ['0755', 'usr/libexec/multilogin-config'],
     ['0644', 'usr/share/luci/menu.d/luci-app-multi-login.json'], ['0644', 'usr/share/rpcd/acl.d/luci-app-multi-login.json'],
     ...['overview', 'configuration', 'network', 'script', 'diagnostics'].map((view) => ['0644', `www/luci-static/resources/view/multilogin/${view}.js`]),
@@ -274,7 +298,7 @@ function createArtifactFixture(label = 'valid', options = {}) {
   fs.writeFileSync(path.join(fixture, 'debian-binary'), '2.0\n');
   const ipk = path.join(fixtureRoot, `luci-app-multilogin_${controlVersion}_all.ipk`);
   const archived = options.outerFormat === 'ar'
-    ? run('ar', ['r', ipk, 'debian-binary', 'control.tar.gz', 'data.tar.gz'], { cwd: fixture })
+    ? run('ar', ['r', ipk, 'debian-binary', 'control.tar.gz', 'data.tar.gz'], { cwd: fixture, timeout: 15000 })
     : run('tar', ['-czf', ipk, 'debian-binary', 'control.tar.gz', 'data.tar.gz'], { cwd: fixture });
   assert.equal(archived.status, 0, archived.stderr);
   const digest = crypto.createHash('sha256').update(fs.readFileSync(ipk)).digest('hex');
@@ -287,7 +311,7 @@ const packagePayloads = [
   ['0600', 'etc/config/multilogin'], ['0755', 'etc/init.d/multilogin'],
   ...['login_control.bash', 'login.sh', 'check_status.sh', 'logout.sh', 'quick_setup.sh'].map((name) => ['0755', `etc/multilogin/${name}`]),
   ['0755', 'usr/lib/multilogin/cqu-portal.factory.sh'], ['0644', 'usr/lib/multilogin/script-policy.sh'],
-  ['0644', 'usr/lib/multilogin/config-policy.sh'], ['0755', 'usr/libexec/rpcd/multilogin'],
+  ['0644', 'usr/lib/multilogin/config-policy.sh'], ['0644', 'usr/lib/multilogin/fs-metadata.sh'], ['0755', 'usr/libexec/rpcd/multilogin'],
   ['0755', 'usr/libexec/multilogin-script'], ['0755', 'usr/libexec/multilogin-config'],
   ['0644', 'usr/share/luci/menu.d/luci-app-multi-login.json'], ['0644', 'usr/share/rpcd/acl.d/luci-app-multi-login.json'],
   ...['overview', 'configuration', 'network', 'script', 'diagnostics'].map((view) => ['0644', `www/luci-static/resources/view/multilogin/${view}.js`]),
@@ -311,12 +335,13 @@ function createApkArtifactFixture(label = 'valid-apk', options = {}) {
   if (options.extraPayload) write(`${label}/payload/usr/bin/unexpected-root-helper`, '#!/bin/sh\n', 0o755);
 
   const depends = options.depends ?? ['bash', 'curl', 'jsonfilter', 'libc', 'luci-base', 'mwan3'];
+  const metadata = read('package/multilogin-fs.sh');
   const migration = read('package/multilogin-migrate.sh');
   const apkHookMap = new Map([
     ['pre-install', 'preinst'], ['post-install', 'postinst'], ['pre-deinstall', 'prerm'], ['post-deinstall', 'postrm'],
   ]);
   const apkHookLines = [...apkHookMap].flatMap(([archiveHook, sourceHook]) => {
-    let core = `ML_MIGRATION_EMBEDDED=1\n${migration}${read(`package/hooks/${sourceHook}.sh`)}`;
+    let core = `ML_FS_EMBEDDED=1\n${metadata}\nML_MIGRATION_EMBEDDED=1\n${migration}${read(`package/hooks/${sourceHook}.sh`)}`;
     if (options.missingMarker && archiveHook === 'pre-install') core = core.replace('ML_MIGRATION_EMBEDDED=1', 'echo migration-missing');
     if (options.literalHook && archiveHook === 'pre-install') core += '$(file <package/hooks/preinst.sh)\n';
     let lines = core.trimEnd().split('\n').filter((line) => line.length > 0);
@@ -333,7 +358,7 @@ function createApkArtifactFixture(label = 'valid-apk', options = {}) {
   const adb = [
     'info:',
     `  name: ${options.packageName ?? 'luci-app-multilogin'}`,
-    `  version: ${options.version ?? '3.0.0_rc1-r1'}`,
+    `  version: ${options.version ?? `${packageApkVersion}-r${packageRelease}`}`,
     `  arch: ${options.arch ?? 'noarch'}`,
     `  depends: # ${depends.length} items`,
     ...depends.map((dependency) => `    - ${dependency}`),
@@ -364,7 +389,7 @@ extract)
 *) exit 2 ;;
 esac
 `, 0o755);
-  const apk = write(`${label}/luci-app-multilogin-3.0.0_rc1-r1.apk`, `ADB fixture: ${label}\n`);
+  const apk = write(`${label}/luci-app-multilogin-${packageApkVersion}-r${packageRelease}.apk`, `ADB fixture: ${label}\n`);
   const digest = crypto.createHash('sha256').update(fs.readFileSync(apk)).digest('hex');
   const sums = write(`${label}/sha256sums.txt`, `${digest}  ${path.basename(apk)}\n`);
   return { apk, sums, fakeTool };

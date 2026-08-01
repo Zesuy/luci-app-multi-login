@@ -309,7 +309,7 @@ function staticSchemaAndSourceTests() {
   const policyFunctions = shellFunctions(policy);
   assert.ok(discovered.functions.length > 0, 'backend functions are not statically discoverable');
   for (const item of discovered.functions)
-    assert.match(item.name, /^ml_[a-z0-9_]+$/, `backend helper is outside the ml_ namespace: ${item.name}`);
+    assert.match(item.name, /^(?:ml_[a-z0-9_]+|json_init)$/, `backend helper is outside the ml_ namespace: ${item.name}`);
   for (const item of policyFunctions)
     assert.match(item.name, /^(?:_ml_policy_|ml_policy_)[a-z0-9_]+$/, `policy helper is outside the policy namespace: ${item.name}`);
   assert.deepEqual(
@@ -388,7 +388,7 @@ function staticSchemaAndSourceTests() {
   );
   const secureFile = singleFunction(
     discovered.functions,
-    (item) => /stat -c ['"]%a %u %g['"]/.test(item.body) && item.body.includes('expected'),
+    (item) => /ml_fs_metadata/.test(item.body) && item.body.includes('expected'),
     'secure regular-file predicate',
   );
   const staticAcceptance = singleFunction(
@@ -559,6 +559,19 @@ function recoveryAndOwnershipTests() {
   pass('init recovery ordering, RPC blocking, source-only policy ownership, and package boundaries');
 }
 
+function jshnNounsetCompatibilityTests() {
+  const backend = read(backendPath);
+  const initializer = 'JSON_PREFIX=${JSON_PREFIX-}\nJSON_UNSET=${JSON_UNSET-}';
+  const sourceAt = backend.indexOf('. /usr/share/libubox/jshn.sh || exit 1');
+  const initializerAt = backend.indexOf(initializer);
+  const overrideAt = backend.indexOf('json_init() {', sourceAt);
+  assert.ok(initializerAt >= 0 && initializerAt < sourceAt,
+    'script RPC backend does not initialize jshn state before sourcing under nounset');
+  assert.ok(overrideAt > sourceAt && backend.indexOf('JSON_UNSET=', overrideAt) > overrideAt,
+    'script RPC backend does not restore JSON_UNSET after every jshn cleanup');
+  pass('script RPC backend restores all jshn cleanup state under nounset after rpcd exec');
+}
+
 rpcMethodSchemaTests();
 policyLoadAndRequestTests();
 semverAndRelationTests();
@@ -568,4 +581,5 @@ staticSchemaAndSourceTests();
 actionEnvelopeCompatibilityTests();
 transactionOrderingTests();
 recoveryAndOwnershipTests();
+jshnNounsetCompatibilityTests();
 process.stdout.write(`${checks} Phase 5 static/pure checks passed.\n`);

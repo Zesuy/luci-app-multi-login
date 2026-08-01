@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fixed Phase 5 script-state backend. Supported CLI: recover | rpc METHOD.
 # OpenWrt's BusyBox ash local extension is intentionally used.
-# shellcheck disable=SC3043
+# shellcheck disable=SC2086,SC3043,SC3045
 set -u
 
 ML_DIR=/etc/multilogin
@@ -31,7 +31,26 @@ ML_DISCARD_HELD=''
 # shellcheck disable=SC1091
 . /usr/lib/multilogin/script-policy.sh || exit 1
 # shellcheck disable=SC1091
+. /usr/lib/multilogin/fs-metadata.sh || exit 1
+# rpcd exec does not preserve jshn's internal JSON_PREFIX/JSON_UNSET. jshn
+# json_init() dereferences both before assigning them, so create empty values
+# before sourcing under `set -u`.
+JSON_PREFIX=${JSON_PREFIX-}
+JSON_UNSET=${JSON_UNSET-}
+# shellcheck disable=SC1091
 . /usr/share/libubox/jshn.sh || exit 1
+
+# jshn's json_load() expands generated `json_init;` text. Its stock json_init
+# unsets JSON_UNSET during cleanup and therefore breaks the next json_add_*
+# under nounset. Restore the cleanup accumulator after every initialization.
+json_init() {
+	json_cleanup
+	export -n ${JSON_PREFIX}JSON_SEQ=0
+	export -- \
+		${JSON_PREFIX}JSON_CUR="J_V" \
+		${JSON_PREFIX}K_J_V=
+	JSON_UNSET=
+}
 
 ml_regular() {
 	[ -f "$1" ] && [ ! -L "$1" ]
@@ -42,7 +61,7 @@ ml_secure_file() {
 	file=$1
 	expected=$2
 	ml_regular "$file" || return 1
-	metadata=$(stat -c '%a %u %g' "$file" 2>/dev/null) || return 1
+	metadata=$(ml_fs_metadata "$file") || return 1
 	[ "$metadata" = "$expected 0 0" ]
 }
 
