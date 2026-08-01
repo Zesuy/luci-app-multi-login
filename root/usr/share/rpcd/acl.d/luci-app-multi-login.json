@@ -1,62 +1,25 @@
 {
-    "luci-app-multi-login": {
-        "description": "Grant access to multilogin configuration",
-        "read": {
-            "uci": [
-                "multilogin",
-                "network",
-                "firewall",
-                "mwan3"
-            ],
-            "file": [
-                "/etc/multilogin/*",
-                "/var/log/multilogin.log"
-            ],
-            "ubus": {
-                "luci": [
-                    "getInitList"
-                ],
-                "service": [
-                    "list"
-                ],
-                "multilogin": [
-                    "list_auto",
-                    "check_instance",
-                    "test_instance",
-                    "logout_instance"
-                ]
-            }
-        },
-        "write": {
-            "uci": [
-                "multilogin",
-                "network",
-                "firewall",
-                "mwan3"
-            ],
-            "file": [
-                "/etc/multilogin/login.sh",
-                "/etc/multilogin/login_A.sh",
-                "/etc/multilogin/login_huxi.sh"
-            ],
-            "ubus": {
-                "luci": [
-                    "setInitAction"
-                ],
-                "file": [
-                    "write",
-                    "read"
-                ],
-                "multilogin": [
-                    "quick_setup",
-                    "remove_auto",
-                    "save_instance",
-                    "delete_instance",
-                    "logout_instance",
-                    "save_account",
-                    "delete_account"
-                ]
-            }
-        }
+  "luci-app-multi-login": {
+    "description": "Grant access only to fixed non-secret MultiLogin RPC methods",
+    "read": {
+      "ubus": {
+        "multilogin": [
+          "get_overview", "get_settings", "list_accounts", "list_instances",
+          "service_status", "get_diagnostics", "get_logs", "list_auto",
+          "check_instance", "script_info", "script_check", "script_get_draft"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "multilogin": [
+          "save_settings", "save_account", "delete_account", "save_instance",
+          "delete_instance", "service_action", "clear_logs", "quick_setup",
+          "remove_auto", "network_recover", "test_instance", "logout_instance",
+          "script_stage", "script_validate", "script_activate", "script_rollback",
+          "script_restore", "script_save_draft", "script_discard_draft"
+        ]
+      }
     }
+  }
 }

@@ -1,58 +1,64 @@
 {
 	"admin/services/multilogin": {
 		"title": "多拨自动登录",
-		"icon": "services/multilogin.png",
 		"action": {
 			"type": "alias",
-			"path": "admin/services/multilogin/settings"
+			"path": "admin/services/multilogin/overview"
 		},
 		"depends": {
 			"acl": [
 				"luci-app-multi-login"
-			],
-			"uci": {
-				"multilogin": true
-			}
+			]
 		}
 	},
-	"admin/services/multilogin/accounts": {
-		"title": "账户管理",
+	"admin/services/multilogin/overview": {
+		"title": "概览",
 		"order": 1,
-		"action": {
-			"type": "view",
-			"path": "multilogin/accounts"
-		}
+		"action": { "type": "view", "path": "multilogin/overview" }
 	},
-	"admin/services/multilogin/interfaces": {
-		"title": "虚拟接口",
+	"admin/services/multilogin/configuration": {
+		"title": "配置",
 		"order": 2,
-		"action": {
-			"type": "view",
-			"path": "multilogin/interfaces"
-		}
+		"action": { "type": "view", "path": "multilogin/configuration" }
+	},
+	"admin/services/multilogin/network": {
+		"title": "网络",
+		"order": 3,
+		"action": { "type": "view", "path": "multilogin/network" }
+	},
+	"admin/services/multilogin/scripts": {
+		"title": "脚本",
+		"order": 4,
+		"action": { "type": "view", "path": "multilogin/script" }
+	},
+	"admin/services/multilogin/diagnostics": {
+		"title": "诊断",
+		"order": 5,
+		"action": { "type": "view", "path": "multilogin/diagnostics" }
 	},
 	"admin/services/multilogin/settings": {
-		"title": "自动登录配置",
-		"order": 3,
-		"action": {
-			"type": "view",
-			"path": "multilogin/settings"
-		}
+		"title": "配置",
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/configuration" }
+	},
+	"admin/services/multilogin/accounts": {
+		"title": "配置",
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/configuration" }
+	},
+	"admin/services/multilogin/interfaces": {
+		"title": "网络",
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/network" }
 	},
 	"admin/services/multilogin/script": {
-		"title": "登录脚本",
-		"order": 4,
-		"action": {
-			"type": "view",
-			"path": "multilogin/script"
-		}
+		"title": "脚本",
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/scripts" }
 	},
 	"admin/services/multilogin/log": {
-		"title": "运行日志",
-		"order": 5,
-		"action": {
-			"type": "view",
-			"path": "multilogin/log"
-		}
+		"title": "诊断",
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/diagnostics" }
 	}
 }

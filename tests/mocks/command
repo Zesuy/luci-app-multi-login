@@ -1,0 +1,104 @@
+#!/bin/sh
+
+set -eu
+
+COMMAND=${0##*/}
+STATE=${MULTILOGIN_MOCK_STATE:?MULTILOGIN_MOCK_STATE is required}
+CAPTURE_HELPER=${MULTILOGIN_MOCK_CAPTURE_HELPER:?MULTILOGIN_MOCK_CAPTURE_HELPER is required}
+
+case $COMMAND in
+uci | ubus | jsonfilter | ifstatus | ip | mwan3 | curl | logger | service | multilogin-init | procd | procd_open_instance | procd_set_param | procd_close_instance | procd_add_reload_trigger | df | stat | date | od | sleep | kill | multilogin-signal) ;;
+*)
+	exit 98
+	;;
+esac
+
+if [ ! -f "$STATE/allow/$COMMAND" ]; then
+	exit 97
+fi
+
+if [ -n "${MULTILOGIN_MOCK_SECRET_SHA256:-}" ]; then
+	for ARG; do
+		ARG_HASH=$(printf '%s' "$ARG" | sha256sum | awk '{ print $1 }')
+		[ "$ARG_HASH" != "$MULTILOGIN_MOCK_SECRET_SHA256" ] || exit 94
+	done
+fi
+
+mkdir -p "$STATE/counts" "$STATE/calls/$COMMAND"
+COUNT_FILE=$STATE/counts/$COMMAND
+if [ -f "$COUNT_FILE" ]; then
+	read -r COUNT <"$COUNT_FILE"
+	case $COUNT in
+	'' | *[!0-9]*) exit 95 ;;
+	esac
+	COUNT=$((COUNT + 1))
+else
+	COUNT=1
+fi
+printf '%s\n' "$COUNT" >"$COUNT_FILE"
+
+CALL_DIR=$STATE/calls/$COMMAND/$COUNT
+mkdir -p "$CALL_DIR"
+printf '%s\n' "$#" >"$CALL_DIR/argc"
+: >"$CALL_DIR/argv.bin"
+for ARG; do
+	printf '%s\0' "$ARG" >>"$CALL_DIR/argv.bin"
+done
+
+if [ "$COMMAND" = jsonfilter ] && [ -n "${MULTILOGIN_MOCK_JSONFILTER_HELPER:-}" ]; then
+	exec node "$MULTILOGIN_MOCK_JSONFILTER_HELPER" "$CALL_DIR/stdin.length" "$CALL_DIR/stdin.sha256" "$@"
+elif [ -t 0 ]; then
+	printf '%s\n' 0 >"$CALL_DIR/stdin.length"
+	printf '%s\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 >"$CALL_DIR/stdin.sha256"
+else
+	node "$CAPTURE_HELPER" "$CALL_DIR/stdin.length" "$CALL_DIR/stdin.sha256"
+fi
+
+if [ "$COMMAND" = mwan3 ] && [ -n "${MULTILOGIN_MOCK_CURL_INSPECTOR:-}" ]; then
+	[ "$#" -eq 5 ] || exit 93
+	if [ "$1" != use ] || [ "$3" != curl ] || [ "$4" != --config ]; then
+		exit 93
+	fi
+	node "$MULTILOGIN_MOCK_CURL_INSPECTOR" "$5" "$CALL_DIR/curl-config.json" || exit 93
+fi
+
+case $COMMAND in
+ifstatus | ip | uci | logger | sleep)
+	if [ -n "${MULTILOGIN_MOCK_DEVICE_HELPER:-}" ]; then
+		exec node "$MULTILOGIN_MOCK_DEVICE_HELPER" "$COMMAND" "$@"
+	fi
+	;;
+esac
+
+RESPONSE_DIR=$STATE/responses/$COMMAND/$COUNT
+DEFAULT_DIR=$STATE/responses/$COMMAND/default
+if [ -d "$RESPONSE_DIR" ]; then
+	SELECTED_DIR=$RESPONSE_DIR
+elif [ -d "$DEFAULT_DIR" ]; then
+	SELECTED_DIR=$DEFAULT_DIR
+else
+	SELECTED_DIR=
+fi
+
+case $COMMAND in
+curl | mwan3)
+	[ -n "$SELECTED_DIR" ] || exit 96
+	;;
+esac
+
+if [ -n "$SELECTED_DIR" ]; then
+	if [ -f "$SELECTED_DIR/block" ]; then
+		while [ -f "$SELECTED_DIR/block" ]; do /bin/sleep 0.02; done
+	fi
+	[ ! -f "$SELECTED_DIR/stdout" ] || cat "$SELECTED_DIR/stdout"
+	[ ! -f "$SELECTED_DIR/stderr" ] || cat "$SELECTED_DIR/stderr" >&2
+	if [ -f "$SELECTED_DIR/status" ]; then
+		read -r STATUS <"$SELECTED_DIR/status"
+		case $STATUS in
+		'' | *[!0-9]*) exit 95 ;;
+		esac
+		exit "$STATUS"
+	fi
+fi
+
+exit 0

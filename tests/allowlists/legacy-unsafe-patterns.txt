@@ -1,0 +1,2 @@
+# category<TAB>relative path<TAB>sha256(trimmed matching line)
+# Known v2 findings only. Missing findings are permitted so this list can shrink.

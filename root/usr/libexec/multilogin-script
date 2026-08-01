@@ -1,0 +1,1427 @@
+#!/bin/sh
+# Fixed Phase 5 script-state backend. Supported CLI: recover | rpc METHOD.
+# OpenWrt's BusyBox ash local extension is intentionally used.
+# shellcheck disable=SC3043
+set -u
+
+ML_DIR=/etc/multilogin
+ML_STATE_DIR=$ML_DIR/.script-state
+ML_STATE=$ML_STATE_DIR/state.json
+ML_JOURNAL=$ML_STATE_DIR/activation.journal
+ML_BACKUP=$ML_STATE_DIR/activation.backup.sh
+ML_CANDIDATE=$ML_STATE_DIR/candidate.sh
+ML_LKG=$ML_STATE_DIR/last-known-good.sh
+ML_CUSTOM=$ML_STATE_DIR/custom.draft.sh
+ML_PRESERVED=$ML_STATE_DIR/custom.preserved.sh
+ML_LOCK=/var/lock/multilogin-script.lock
+ML_ACTIVE=$ML_DIR/cqu-portal.sh
+ML_FACTORY=/usr/lib/multilogin/cqu-portal.factory.sh
+ML_RAW_URL=https://raw.githubusercontent.com/Zesuy/luci-app-multi-login/main/etc/multilogin/cqu-portal.sh
+ML_LIMIT=262144
+ML_CONNECT_TIMEOUT=8
+ML_TOTAL_TIMEOUT=20
+ML_SELF_TEST_TIMEOUT=10
+ML_SELF_TEST_OUTPUT_LIMIT=8192
+ML_REQUEST_LIMIT=2097152
+ML_LOCK_HELD=0
+ML_TEMP_DIR=''
+ML_ATOMIC_TEMP=''
+ML_DISCARD_HELD=''
+
+# shellcheck disable=SC1091
+. /usr/lib/multilogin/script-policy.sh || exit 1
+# shellcheck disable=SC1091
+. /usr/share/libubox/jshn.sh || exit 1
+
+ml_regular() {
+	[ -f "$1" ] && [ ! -L "$1" ]
+}
+
+ml_secure_file() {
+	local file expected metadata
+	file=$1
+	expected=$2
+	ml_regular "$file" || return 1
+	metadata=$(stat -c '%a %u %g' "$file" 2>/dev/null) || return 1
+	[ "$metadata" = "$expected 0 0" ]
+}
+
+ml_sha256() {
+	sha256sum "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
+}
+
+ml_cleanup() {
+	local temporary custom_present
+	if [ -n "$ML_ATOMIC_TEMP" ]; then
+		case $ML_ATOMIC_TEMP in
+		"$ML_DIR"/.script-write.* | "$ML_STATE_DIR"/.script-write.*) rm -f "$ML_ATOMIC_TEMP" >/dev/null 2>&1 || : ;;
+		esac
+		ML_ATOMIC_TEMP=''
+	fi
+	if [ -n "$ML_DISCARD_HELD" ]; then
+		case $ML_DISCARD_HELD in
+		"$ML_STATE_DIR"/.custom-discard.*)
+			if ml_regular "$ML_DISCARD_HELD"; then
+				custom_present=$(jsonfilter -e '@.custom.present' <"$ML_STATE" 2>/dev/null) || custom_present=true
+				if [ "$custom_present" = false ] || [ "$custom_present" = 0 ]; then
+					rm -f "$ML_DISCARD_HELD" >/dev/null 2>&1 || :
+				elif [ ! -e "$ML_CUSTOM" ] && [ ! -L "$ML_CUSTOM" ]; then
+					mv "$ML_DISCARD_HELD" "$ML_CUSTOM" >/dev/null 2>&1 || :
+				fi
+			fi
+			;;
+		esac
+		ML_DISCARD_HELD=''
+	fi
+	if [ -n "$ML_TEMP_DIR" ]; then
+		case $ML_TEMP_DIR in
+		/tmp/multilogin-script.*)
+			if [ -d "$ML_TEMP_DIR" ] && [ ! -L "$ML_TEMP_DIR" ]; then
+				for temporary in "$ML_TEMP_DIR"/* "$ML_TEMP_DIR"/.[!.]* "$ML_TEMP_DIR"/..?*; do
+					[ -e "$temporary" ] || [ -L "$temporary" ] || continue
+					rm -f "$temporary" >/dev/null 2>&1 || :
+				done
+				rmdir "$ML_TEMP_DIR" >/dev/null 2>&1 || :
+			fi
+			;;
+		esac
+		ML_TEMP_DIR=''
+	fi
+	if [ "$ML_LOCK_HELD" = 1 ]; then
+		lock -u "$ML_LOCK" >/dev/null 2>&1 || :
+		ML_LOCK_HELD=0
+	fi
+}
+
+ml_on_signal() {
+	ml_cleanup
+	exit 1
+}
+
+trap ml_cleanup EXIT
+trap ml_on_signal HUP INT TERM
+
+ml_prepare_state_dir() {
+	if [ -e "$ML_STATE_DIR" ] || [ -L "$ML_STATE_DIR" ]; then
+		[ -d "$ML_STATE_DIR" ] && [ ! -L "$ML_STATE_DIR" ] || return 1
+	else
+		(umask 077 && mkdir "$ML_STATE_DIR") 2>/dev/null || return 1
+	fi
+	chmod 0700 "$ML_STATE_DIR" 2>/dev/null || return 1
+	chown 0:0 "$ML_STATE_DIR" 2>/dev/null || return 1
+	return 0
+}
+
+ml_acquire_lock() {
+	local lock_dir
+	lock_dir=${ML_LOCK%/*}
+	[ -d "$lock_dir" ] && [ ! -L "$lock_dir" ] || return 1
+	if [ -e "$ML_LOCK" ] || [ -L "$ML_LOCK" ]; then
+		ml_regular "$ML_LOCK" || return 1
+	else
+		(umask 077 && set -C && : >"$ML_LOCK") 2>/dev/null || {
+			ml_regular "$ML_LOCK" || return 1
+		}
+	fi
+	chmod 0600 "$ML_LOCK" 2>/dev/null || return 1
+	chown 0:0 "$ML_LOCK" 2>/dev/null || return 1
+	# OpenWrt lock acquires non-blockingly by default; -w is the blocking mode.
+	lock "$ML_LOCK" >/dev/null 2>&1 || return 1
+	ML_LOCK_HELD=1
+	ml_prepare_state_dir || return 1
+	return 0
+}
+
+ml_prepare_temp_dir() {
+	if [ -n "$ML_TEMP_DIR" ]; then
+		case $ML_TEMP_DIR in /tmp/multilogin-script.*) [ -d "$ML_TEMP_DIR" ] && [ ! -L "$ML_TEMP_DIR" ] && return 0 ;; esac
+		return 1
+	fi
+	[ -d /tmp ] && [ ! -L /tmp ] || return 1
+	ML_TEMP_DIR=$(umask 077 && mktemp -d /tmp/multilogin-script.XXXXXX) || return 1
+	case $ML_TEMP_DIR in /tmp/multilogin-script.*) ;; *)
+		ML_TEMP_DIR=''
+		return 1
+		;;
+	esac
+	chmod 0700 "$ML_TEMP_DIR" 2>/dev/null || return 1
+	return 0
+}
+
+ml_has_space() {
+	local bytes available required
+	bytes=$1
+	case $bytes in *[!0-9]* | '') return 1 ;; esac
+	available=$(df -Pk "$ML_STATE_DIR" 2>/dev/null | awk 'NR == 2 { print $4 }') || return 1
+	case $available in *[!0-9]* | '') return 1 ;; esac
+	required=$(((bytes + 1023) / 1024 + 64))
+	[ "$available" -ge "$required" ] 2>/dev/null
+}
+
+ml_sync_file() {
+	sync -f "$1" >/dev/null 2>&1 || sync >/dev/null 2>&1 || :
+}
+
+ml_atomic_copy() {
+	local source target mode directory temporary
+	source=$1
+	target=$2
+	mode=$3
+	ml_regular "$source" || return 1
+	directory=${target%/*}
+	[ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+	temporary=$(umask 077 && mktemp "$directory/.script-write.XXXXXX") || return 1
+	ML_ATOMIC_TEMP=$temporary
+	if ! cat "$source" >"$temporary" || ! chmod "$mode" "$temporary" || ! chown 0:0 "$temporary"; then
+		rm -f "$temporary"
+		ML_ATOMIC_TEMP=''
+		return 1
+	fi
+	ml_sync_file "$temporary"
+	if ! mv -f "$temporary" "$target"; then
+		rm -f "$temporary"
+		ML_ATOMIC_TEMP=''
+		return 1
+	fi
+	ML_ATOMIC_TEMP=''
+	ml_sync_file "$target"
+	ml_sync_file "$directory"
+	return 0
+}
+
+ml_atomic_text() {
+	local target mode content directory temporary
+	target=$1
+	mode=$2
+	content=$3
+	directory=${target%/*}
+	[ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+	temporary=$(umask 077 && mktemp "$directory/.script-write.XXXXXX") || return 1
+	ML_ATOMIC_TEMP=$temporary
+	if ! printf '%s' "$content" >"$temporary" || ! chmod "$mode" "$temporary" || ! chown 0:0 "$temporary"; then
+		rm -f "$temporary"
+		ML_ATOMIC_TEMP=''
+		return 1
+	fi
+	ml_sync_file "$temporary"
+	if ! mv -f "$temporary" "$target"; then
+		rm -f "$temporary"
+		ML_ATOMIC_TEMP=''
+		return 1
+	fi
+	ML_ATOMIC_TEMP=''
+	ml_sync_file "$target"
+	ml_sync_file "$directory"
+	return 0
+}
+
+ml_metadata() {
+	local file api_count version_count version
+	file=$1
+	ML_META_VERSION=''
+	ML_META_API=0
+	ml_regular "$file" || return 1
+	api_count=$(sed -n '/^MULTILOGIN_SCRIPT_API=3$/p' "$file" 2>/dev/null | wc -l) || return 1
+	[ "$api_count" -eq 1 ] 2>/dev/null || return 1
+	version=$(sed -n \
+		-e "s/^MULTILOGIN_SCRIPT_VERSION='\([^']*\)'$/\1/p" \
+		-e 's/^MULTILOGIN_SCRIPT_VERSION="\([^"]*\)"$/\1/p' \
+		-e 's/^MULTILOGIN_SCRIPT_VERSION=\([0-9A-Za-z.+-]*\)$/\1/p' \
+		"$file" 2>/dev/null) || return 1
+	version_count=$(printf '%s\n' "$version" | awk 'NF { count++ } END { print count + 0 }')
+	[ "$version_count" -eq 1 ] 2>/dev/null || return 1
+	[ "$(ml_policy_semver_compare "$version" "$version")" = 0 ] || return 1
+	ML_META_VERSION=$version
+	ML_META_API=3
+	return 0
+}
+
+ml_static_accept() {
+	local file expected_mode content_policy
+	file=$1
+	expected_mode=$2
+	ml_secure_file "$file" "$expected_mode" || return 1
+	content_policy=$(ml_policy_content_file "$file")
+	[ "$content_policy" = ok ] || return 1
+	ml_metadata "$file" || return 1
+	/bin/sh -n "$file" >/dev/null 2>&1 || return 1
+	return 0
+}
+
+ml_summary_none() {
+	printf '%s' '{"present":false,"status":"none","source":"unknown","mode":"none","version":"","api":0,"sha256":""}'
+}
+
+ml_summary_file() {
+	local file status source mode version api hash
+	file=$1
+	status=$2
+	source=$3
+	mode=$4
+	if ! ml_regular "$file"; then
+		ml_summary_none
+		return
+	fi
+	version=''
+	api=0
+	if ml_metadata "$file"; then
+		version=$ML_META_VERSION
+		api=$ML_META_API
+	fi
+	hash=$(ml_sha256 "$file") || hash=''
+	printf '{"present":true,"status":"%s","source":"%s","mode":"%s","version":"%s","api":%s,"sha256":"%s"}' \
+		"$status" "$source" "$mode" "$version" "$api" "$hash"
+}
+
+ml_summary_value() {
+	printf '%s' "$1" | jsonfilter -e "@.$2" 2>/dev/null
+}
+
+ml_summary_matches_file() {
+	local summary file expected_mode present expected actual
+	summary=$1
+	file=$2
+	expected_mode=$3
+	present=$(ml_summary_value "$summary" present) || return 1
+	case $present in true | 1) ;; *) return 1 ;; esac
+	ml_secure_file "$file" "$expected_mode" || return 1
+	expected=$(ml_summary_value "$summary" sha256) || return 1
+	actual=$(ml_sha256 "$file") || return 1
+	[ "$expected" = "$actual" ]
+}
+
+ml_current_keys() {
+	local keys key sorted
+	json_get_keys keys || return 1
+	sorted=''
+	if [ -n "$keys" ]; then
+		sorted=$(for key in $keys; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
+		sorted=${sorted% }
+	fi
+	printf '%s' "$sorted"
+}
+
+ml_validate_summary_current() {
+	local allowed_status keys type present status source mode version api hash
+	allowed_status=$1
+	keys=$(ml_current_keys) || return 1
+	[ "$keys" = 'api mode present sha256 source status version' ] || return 1
+	json_get_type type present && [ "$type" = boolean ] || return 1
+	json_get_type type status && [ "$type" = string ] || return 1
+	json_get_type type source && [ "$type" = string ] || return 1
+	json_get_type type mode && [ "$type" = string ] || return 1
+	json_get_type type version && [ "$type" = string ] || return 1
+	json_get_type type api && [ "$type" = int ] || return 1
+	json_get_type type sha256 && [ "$type" = string ] || return 1
+	json_get_var present present
+	json_get_var status status
+	json_get_var source source
+	json_get_var mode mode
+	json_get_var version version
+	json_get_var api api
+	json_get_var hash sha256
+	case $present in
+	0 | false)
+		[ "$status" = none ] && [ "$source" = unknown ] && [ "$mode" = none ] && [ -z "$version" ] && [ "$api" = 0 ] && [ -z "$hash" ]
+		return
+		;;
+	1 | true) ;;
+	*) return 1 ;;
+	esac
+	case " $allowed_status " in *" $status "*) ;; *) return 1 ;; esac
+	case $source in factory | raw | custom | unknown) ;; *) return 1 ;; esac
+	case $mode in managed | custom | none) ;; *) return 1 ;; esac
+	_ml_policy_hash "$hash" || return 1
+	if [ -z "$version" ]; then
+		[ "$api" = 0 ] || return 1
+	else
+		[ "$api" = 3 ] && [ "$(ml_policy_semver_compare "$version" "$version")" = 0 ] || return 1
+	fi
+	return 0
+}
+
+ml_validate_state_file() {
+	local content keys type schema generation mode slot allowed
+	ml_secure_file "$ML_STATE" 600 || return 1
+	content=$(
+		cat "$ML_STATE"
+		printf x
+	)
+	content=${content%x}
+	ml_trim_json_object "$content" || return 1
+	json_load "$content" >/dev/null 2>&1 || return 1
+	keys=$(ml_current_keys) || return 1
+	[ "$keys" = 'active candidate custom generation last_known_good mode schema' ] || return 1
+	json_get_type type schema && [ "$type" = int ] || return 1
+	json_get_type type generation && [ "$type" = int ] || return 1
+	json_get_type type mode && [ "$type" = string ] || return 1
+	json_get_var schema schema
+	json_get_var generation generation
+	json_get_var mode mode
+	[ "$schema" = 1 ] && [ "$(ml_policy_generation "$generation" "$generation")" = ok ] || return 1
+	case $mode in managed | custom) ;; *) return 1 ;; esac
+	for slot in active candidate last_known_good custom; do
+		case $slot in active) allowed=active ;; candidate) allowed='none staged validated' ;; last_known_good) allowed='none available' ;; custom) allowed='none draft validated' ;; esac
+		json_select "$slot" >/dev/null 2>&1 || return 1
+		ml_validate_summary_current "$allowed" || return 1
+		json_select .. >/dev/null 2>&1 || return 1
+	done
+	return 0
+}
+
+ml_validate_journal_file() {
+	local content keys type schema generation operation source selected backup state
+	ml_secure_file "$ML_JOURNAL" 600 || return 1
+	content=$(
+		cat "$ML_JOURNAL"
+		printf x
+	)
+	content=${content%x}
+	ml_trim_json_object "$content" || return 1
+	json_load "$content" >/dev/null 2>&1 || return 1
+	keys=$(ml_current_keys) || return 1
+	[ "$keys" = 'backup_sha256 generation operation previous_active schema selected_sha256 source state' ] || return 1
+	for type in schema generation; do
+		json_get_type keys "$type" && [ "$keys" = int ] || return 1
+	done
+	for type in operation source selected_sha256 backup_sha256 state; do
+		json_get_type keys "$type" && [ "$keys" = string ] || return 1
+	done
+	json_get_var schema schema
+	json_get_var generation generation
+	json_get_var operation operation
+	json_get_var source source
+	json_get_var selected selected_sha256
+	json_get_var backup backup_sha256
+	json_get_var state state
+	[ "$schema" = 1 ] && [ "$(ml_policy_generation "$generation" "$generation")" = ok ] || return 1
+	case $operation in activate | rollback | restore) ;; *) return 1 ;; esac
+	case $source in candidate | custom | last_known_good | factory) ;; *) return 1 ;; esac
+	case $state in prepared | active_replaced | verified | rollback_required) ;; *) return 1 ;; esac
+	_ml_policy_hash "$selected" && _ml_policy_hash "$backup" || return 1
+	json_select previous_active >/dev/null 2>&1 || return 1
+	ml_validate_summary_current active || return 1
+	json_select .. >/dev/null 2>&1 || return 1
+	return 0
+}
+
+ml_state_load() {
+	local schema
+	ML_GENERATION=0
+	ML_MODE=managed
+	ML_STATE_ACTIVE=''
+	ML_STATE_CANDIDATE=$(ml_summary_none)
+	ML_STATE_LKG=$(ml_summary_none)
+	ML_STATE_CUSTOM=$(ml_summary_none)
+	if [ ! -e "$ML_STATE" ] && [ ! -L "$ML_STATE" ]; then
+		if ml_regular "$ML_ACTIVE" && ml_regular "$ML_FACTORY" && [ "$(ml_sha256 "$ML_ACTIVE")" = "$(ml_sha256 "$ML_FACTORY")" ]; then
+			ML_STATE_ACTIVE=$(ml_summary_file "$ML_ACTIVE" active factory managed)
+		else
+			ML_STATE_ACTIVE=$(ml_summary_file "$ML_ACTIVE" active unknown none)
+		fi
+		return 0
+	fi
+	ml_validate_state_file || return 1
+	schema=$(jsonfilter -e '@.schema' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_GENERATION=$(jsonfilter -e '@.generation' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_MODE=$(jsonfilter -e '@.mode' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_STATE_ACTIVE=$(jsonfilter -e '@.active' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_STATE_CANDIDATE=$(jsonfilter -e '@.candidate' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_STATE_LKG=$(jsonfilter -e '@.last_known_good' <"$ML_STATE" 2>/dev/null) || return 1
+	ML_STATE_CUSTOM=$(jsonfilter -e '@.custom' <"$ML_STATE" 2>/dev/null) || return 1
+	[ "$schema" = 1 ] || return 1
+	[ "$(ml_policy_generation "$ML_GENERATION" "$ML_GENERATION")" = ok ] || return 1
+	case $ML_MODE in managed | custom) ;; *) return 1 ;; esac
+	return 0
+}
+
+ml_effective_summary() {
+	local stored file expected_mode fallback_status fallback_source fallback_mode
+	stored=$1
+	file=$2
+	expected_mode=$3
+	fallback_status=$4
+	fallback_source=$5
+	fallback_mode=$6
+	if ml_summary_matches_file "$stored" "$file" "$expected_mode"; then
+		printf '%s' "$stored"
+	else
+		ml_summary_file "$file" "$fallback_status" "$fallback_source" "$fallback_mode"
+	fi
+}
+
+ml_durable_slot_summary() {
+	local stored file expected_mode present
+	stored=$1
+	file=$2
+	expected_mode=$3
+	present=$(ml_summary_value "$stored" present) || return 1
+	case $present in
+	true | 1)
+		ml_summary_matches_file "$stored" "$file" "$expected_mode" || return 1
+		printf '%s' "$stored"
+		;;
+	false | 0)
+		[ ! -e "$file" ] && [ ! -L "$file" ] || return 1
+		printf '%s' "$stored"
+		;;
+	*) return 1 ;;
+	esac
+}
+
+ml_refresh_effective_state() {
+	ML_ACTIVE_SUMMARY=$(ml_effective_summary "$ML_STATE_ACTIVE" "$ML_ACTIVE" 755 active unknown none)
+	ML_CANDIDATE_SUMMARY=$(ml_durable_slot_summary "$ML_STATE_CANDIDATE" "$ML_CANDIDATE" 600) || return 1
+	ML_LKG_SUMMARY=$(ml_durable_slot_summary "$ML_STATE_LKG" "$ML_LKG" 600) || return 1
+	ML_CUSTOM_SUMMARY=$(ml_durable_slot_summary "$ML_STATE_CUSTOM" "$ML_CUSTOM" 600) || return 1
+	return 0
+}
+
+ml_json_add_summary() {
+	local name summary present status source mode version api hash
+	name=$1
+	summary=$2
+	present=$(ml_summary_value "$summary" present) || present=false
+	status=$(ml_summary_value "$summary" status) || status=none
+	source=$(ml_summary_value "$summary" source) || source=unknown
+	mode=$(ml_summary_value "$summary" mode) || mode=none
+	version=$(ml_summary_value "$summary" version) || version=''
+	api=$(ml_summary_value "$summary" api) || api=0
+	hash=$(ml_summary_value "$summary" sha256) || hash=''
+	json_add_object "$name"
+	case $present in true | 1) json_add_boolean present 1 ;; *) json_add_boolean present 0 ;; esac
+	json_add_string status "$status"
+	json_add_string source "$source"
+	json_add_string mode "$mode"
+	json_add_string version "$version"
+	json_add_int api "$api"
+	json_add_string sha256 "$hash"
+	json_close_object
+}
+
+ml_build_state_json() {
+	local generation mode active candidate lkg custom
+	generation=$1
+	mode=$2
+	active=$3
+	candidate=$4
+	lkg=$5
+	custom=$6
+	json_init
+	json_add_int schema 1
+	json_add_int generation "$generation"
+	json_add_string mode "$mode"
+	ml_json_add_summary active "$active"
+	ml_json_add_summary candidate "$candidate"
+	ml_json_add_summary last_known_good "$lkg"
+	ml_json_add_summary custom "$custom"
+	json_dump
+}
+
+ml_state_write() {
+	local content
+	content=$(
+		ml_build_state_json "$@"
+		printf x
+	)
+	content=${content%x}
+	ml_atomic_text "$ML_STATE" 0600 "$content"
+}
+
+ml_build_journal_json() {
+	local generation operation source selected previous backup state
+	generation=$1
+	operation=$2
+	source=$3
+	selected=$4
+	previous=$5
+	backup=$6
+	state=$7
+	json_init
+	json_add_int schema 1
+	json_add_int generation "$generation"
+	json_add_string operation "$operation"
+	json_add_string source "$source"
+	json_add_string selected_sha256 "$selected"
+	ml_json_add_summary previous_active "$previous"
+	json_add_string backup_sha256 "$backup"
+	json_add_string state "$state"
+	json_dump
+}
+
+ml_journal_write() {
+	local content
+	content=$(
+		ml_build_journal_json "$@"
+		printf x
+	)
+	content=${content%x}
+	ml_atomic_text "$ML_JOURNAL" 0600 "$content"
+}
+
+ml_emit_begin() {
+	json_init
+	json_add_boolean ok "$1"
+	json_add_string code "$2"
+	json_add_string message "$3"
+	json_add_object data
+}
+
+ml_emit_end() {
+	json_close_object
+	json_dump
+	printf '\n'
+}
+
+ml_fail_empty() {
+	ml_emit_begin 0 "$1" "$2"
+	ml_emit_end
+	exit 0
+}
+
+ml_fail_conflict() {
+	ml_emit_begin 0 conflict 'state changed; refresh and retry'
+	json_add_int generation "$ML_GENERATION"
+	json_add_string sha256 "$1"
+	ml_emit_end
+	exit 0
+}
+
+ml_fail_recovery() {
+	ml_emit_begin 0 recovery_required 'script recovery is required'
+	json_add_int generation "$ML_GENERATION"
+	ml_emit_end
+	exit 0
+}
+
+ml_fail_activation() {
+	ml_emit_begin 0 activation_failed 'activation validation failed'
+	json_add_int generation "$ML_GENERATION"
+	json_add_boolean recovery_required "$1"
+	ml_emit_end
+	exit 0
+}
+
+ml_request_text() {
+	local value request_file request_size
+	ml_prepare_temp_dir || return 1
+	request_file=$ML_TEMP_DIR/request.json
+	head -c "$((ML_REQUEST_LIMIT + 1))" >"$request_file" 2>/dev/null || return 1
+	chmod 0600 "$request_file" 2>/dev/null || return 1
+	request_size=$(wc -c <"$request_file" 2>/dev/null) || return 1
+	[ "$request_size" -le "$ML_REQUEST_LIMIT" ] 2>/dev/null || return 1
+	if od -An -tu1 -v "$request_file" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i + 0 == 0) found = 1 } END { exit !found }'; then
+		return 1
+	fi
+	if awk '
+		{
+			text = text $0 "\n"
+		}
+		END {
+			for (i = 1; i <= length(text); i++) {
+				if (substr(text, i, 1) != "\\") continue
+				if (substr(text, i + 1, 1) == "u" && substr(text, i + 2, 4) == "0000") exit 0
+				i++
+			}
+			exit 1
+		}
+	' "$request_file"; then
+		return 1
+	fi
+	value=$(
+		cat "$request_file"
+		printf x
+	)
+	ML_REQUEST=${value%x}
+	[ -n "$ML_REQUEST" ] || ML_REQUEST='{}'
+	return 0
+}
+
+ml_trim_json_object() {
+	local value first last
+	value=$1
+	while [ -n "$value" ]; do
+		first=${value%"${value#?}"}
+		case $first in ' ' | '	' | '
+' | '') value=${value#?} ;; *) break ;; esac
+	done
+	while [ -n "$value" ]; do
+		last=${value#"${value%?}"}
+		case $last in ' ' | '	' | '
+' | '') value=${value%?} ;; *) break ;; esac
+	done
+	case $value in \{*\}) return 0 ;; *) return 1 ;; esac
+}
+
+ml_get_typed() {
+	local destination key expected actual
+	destination=$1
+	key=$2
+	expected=$3
+	json_get_type actual "$key" || return 1
+	[ "$actual" = "$expected" ] || return 1
+	json_get_var "$destination" "$key" || return 1
+	return 0
+}
+
+ml_parse_request() {
+	local method keys sorted key boolean_value
+	method=$1
+	ml_trim_json_object "$ML_REQUEST" || return 1
+	json_load "$ML_REQUEST" >/dev/null 2>&1 || return 1
+	json_get_keys keys
+	sorted=''
+	if [ -n "$keys" ]; then
+		sorted=$(for key in $keys; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
+		sorted=${sorted% }
+	fi
+	[ "$(ml_policy_request_fields "$method" "$sorted")" = ok ] || return 1
+	ML_REQ_EXPECTED_GENERATION=''
+	ML_REQ_EXPECTED_SHA256=''
+	ML_REQ_BASE_SHA256=''
+	ML_REQ_SOURCE=''
+	ML_REQ_CONFIRM_EXECUTE=''
+	ML_REQ_CONFIRM_ACTIVATE=''
+	ML_REQ_ALLOW_DOWNGRADE=''
+	ML_REQ_CONTENT=''
+	case $method in
+	script_info | script_check | script_get_draft) ;;
+	script_stage)
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		;;
+	script_validate)
+		ml_get_typed ML_REQ_SOURCE source string || return 1
+		ml_get_typed ML_REQ_EXPECTED_SHA256 expected_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		ml_get_typed boolean_value confirm_execute boolean || return 1
+		case $boolean_value in 1 | true) ML_REQ_CONFIRM_EXECUTE=true ;; 0 | false) ML_REQ_CONFIRM_EXECUTE=false ;; *) return 1 ;; esac
+		;;
+	script_activate)
+		ml_get_typed ML_REQ_SOURCE source string || return 1
+		ml_get_typed ML_REQ_EXPECTED_SHA256 expected_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		ml_get_typed boolean_value confirm_activate boolean || return 1
+		case $boolean_value in 1 | true) ML_REQ_CONFIRM_ACTIVATE=true ;; 0 | false) ML_REQ_CONFIRM_ACTIVATE=false ;; *) return 1 ;; esac
+		ml_get_typed boolean_value allow_downgrade boolean || return 1
+		case $boolean_value in 1 | true) ML_REQ_ALLOW_DOWNGRADE=true ;; 0 | false) ML_REQ_ALLOW_DOWNGRADE=false ;; *) return 1 ;; esac
+		;;
+	script_rollback | script_restore)
+		ml_get_typed ML_REQ_EXPECTED_SHA256 expected_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		ml_get_typed boolean_value confirm_activate boolean || return 1
+		case $boolean_value in 1 | true) ML_REQ_CONFIRM_ACTIVATE=true ;; 0 | false) ML_REQ_CONFIRM_ACTIVATE=false ;; *) return 1 ;; esac
+		;;
+	script_save_draft)
+		ml_get_typed ML_REQ_CONTENT content string || return 1
+		ml_get_typed ML_REQ_BASE_SHA256 base_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		;;
+	script_discard_draft)
+		ml_get_typed ML_REQ_EXPECTED_SHA256 expected_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		;;
+	*) return 1 ;;
+	esac
+	case $ML_REQ_EXPECTED_GENERATION in '') ;; *) [ "$(ml_policy_generation "$ML_REQ_EXPECTED_GENERATION" "$ML_REQ_EXPECTED_GENERATION")" = ok ] || return 1 ;; esac
+	case $ML_REQ_EXPECTED_SHA256 in '') ;; *) _ml_policy_hash "$ML_REQ_EXPECTED_SHA256" || return 1 ;; esac
+	case $method in script_save_draft) [ -z "$ML_REQ_BASE_SHA256" ] || _ml_policy_hash "$ML_REQ_BASE_SHA256" || return 1 ;; esac
+	case $method:$ML_REQ_SOURCE in script_validate:candidate | script_validate:custom | script_activate:candidate | script_activate:custom | script_info: | script_check: | script_stage: | script_get_draft: | script_rollback: | script_restore: | script_save_draft: | script_discard_draft:) ;; *) return 1 ;; esac
+	return 0
+}
+
+ml_check_generation() {
+	case $(ml_policy_generation "$ML_REQ_EXPECTED_GENERATION" "$ML_GENERATION") in
+	ok) return 0 ;;
+	conflict) ml_fail_conflict "$1" ;;
+	*) ml_fail_empty invalid_request 'invalid generation' ;;
+	esac
+}
+
+ml_clear_transaction() {
+	# The journal is the recovery authority. Never remove its backup first.
+	rm -f "$ML_JOURNAL" || return 1
+	ml_sync_file "$ML_STATE_DIR"
+	rm -f "$ML_BACKUP" || return 2
+	ml_sync_file "$ML_STATE_DIR"
+	return 0
+}
+
+ml_recover() {
+	local schema journal_generation operation source selected previous backup state state_generation active_hash state_active_hash desired_lkg_hash previous_hash clear_status
+	if [ ! -e "$ML_JOURNAL" ] && [ ! -L "$ML_JOURNAL" ]; then
+		ml_state_load || return 1
+		ml_refresh_effective_state || return 1
+		ml_static_accept "$ML_ACTIVE" 755 || return 1
+		if [ -e "$ML_STATE" ] || [ -L "$ML_STATE" ]; then
+			ml_summary_matches_file "$ML_STATE_ACTIVE" "$ML_ACTIVE" 755 || return 1
+		fi
+		if [ -e "$ML_BACKUP" ] || [ -L "$ML_BACKUP" ]; then
+			ml_secure_file "$ML_BACKUP" 600 || return 1
+			if [ ! -e "$ML_STATE" ] && [ ! -L "$ML_STATE" ]; then
+				[ "$(ml_sha256 "$ML_ACTIVE")" = "$(ml_sha256 "$ML_BACKUP")" ] || return 1
+			fi
+			rm -f "$ML_BACKUP" || return 1
+			ml_sync_file "$ML_STATE_DIR"
+		fi
+		return 0
+	fi
+	ml_validate_journal_file || return 1
+	schema=$(jsonfilter -e '@.schema' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	journal_generation=$(jsonfilter -e '@.generation' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	operation=$(jsonfilter -e '@.operation' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	source=$(jsonfilter -e '@.source' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	selected=$(jsonfilter -e '@.selected_sha256' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	previous=$(jsonfilter -e '@.previous_active' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	backup=$(jsonfilter -e '@.backup_sha256' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	state=$(jsonfilter -e '@.state' <"$ML_JOURNAL" 2>/dev/null) || return 1
+	[ "$schema" = 1 ] || return 1
+	case $operation in activate | rollback | restore) ;; *) return 1 ;; esac
+	case $source in candidate | custom | last_known_good | factory) ;; *) return 1 ;; esac
+	case $state in prepared | active_replaced | verified | rollback_required) ;; *) return 1 ;; esac
+	_ml_policy_hash "$selected" && _ml_policy_hash "$backup" || return 1
+	previous_hash=$(ml_summary_value "$previous" sha256) || return 1
+	[ "$previous_hash" = "$backup" ] || return 1
+	ml_secure_file "$ML_BACKUP" 600 && [ "$(ml_sha256 "$ML_BACKUP")" = "$backup" ] || return 1
+	ml_state_load || return 1
+	state_generation=$ML_GENERATION
+	active_hash=''
+	ml_regular "$ML_ACTIVE" && active_hash=$(ml_sha256 "$ML_ACTIVE")
+	if [ "$state_generation" = $((journal_generation + 1)) ] 2>/dev/null && [ "$active_hash" = "$selected" ]; then
+		state_active_hash=$(ml_summary_value "$ML_STATE_ACTIVE" sha256) || return 1
+		[ "$state_active_hash" = "$selected" ] || return 1
+		desired_lkg_hash=$(ml_summary_value "$ML_STATE_LKG" sha256) || return 1
+		[ "$desired_lkg_hash" = "$backup" ] || return 1
+		if ! ml_summary_matches_file "$ML_STATE_LKG" "$ML_LKG" 600; then
+			ml_atomic_copy "$ML_BACKUP" "$ML_LKG" 0600 || return 1
+			ml_summary_matches_file "$ML_STATE_LKG" "$ML_LKG" 600 || return 1
+		fi
+		ml_clear_transaction
+		return $?
+	fi
+	[ "$state_generation" = "$journal_generation" ] || return 1
+	case $state in
+	prepared)
+		[ "$active_hash" = "$previous_hash" ] || return 1
+		ml_clear_transaction
+		return $?
+		;;
+	active_replaced | verified | rollback_required)
+		ml_atomic_copy "$ML_BACKUP" "$ML_ACTIVE" 0755 || return 1
+		[ "$(ml_sha256 "$ML_ACTIVE")" = "$previous_hash" ] || return 1
+		ml_clear_transaction
+		clear_status=$?
+		return "$clear_status"
+		;;
+	esac
+	return 1
+}
+
+ml_info_active_summary() {
+	local actual_hash selected source mode
+	actual_hash=''
+	ml_regular "$ML_ACTIVE" && actual_hash=$(ml_sha256 "$ML_ACTIVE")
+	if ml_summary_matches_file "$ML_STATE_ACTIVE" "$ML_ACTIVE" 755; then
+		printf '%s' "$ML_STATE_ACTIVE"
+		return
+	fi
+	if ml_regular "$ML_JOURNAL"; then
+		selected=$(jsonfilter -e '@.selected_sha256' <"$ML_JOURNAL" 2>/dev/null) || selected=''
+		if [ -n "$actual_hash" ] && [ "$actual_hash" = "$selected" ]; then
+			source=$(jsonfilter -e '@.source' <"$ML_JOURNAL" 2>/dev/null) || source=unknown
+			case $source in candidate)
+				source=raw
+				mode=managed
+				;;
+			custom) mode=custom ;; factory) mode=managed ;; last_known_good)
+				source=$(ml_summary_value "$ML_STATE_LKG" source) || source=unknown
+				mode=$(ml_summary_value "$ML_STATE_LKG" mode) || mode=none
+				;;
+			*)
+				source=unknown
+				mode=none
+				;;
+			esac
+			ml_summary_file "$ML_ACTIVE" active "$source" "$mode"
+			return
+		fi
+	fi
+	ml_summary_file "$ML_ACTIVE" active unknown none
+}
+
+ml_rpc_info() {
+	local recovery active factory preserved
+	recovery=0
+	ml_recover || recovery=1
+	ml_state_load || ml_fail_empty internal_error 'invalid script state'
+	ml_refresh_effective_state || ml_fail_empty internal_error 'script state does not match fixed files'
+	active=$(ml_info_active_summary)
+	factory=$(ml_summary_file "$ML_FACTORY" available factory managed)
+	preserved=$(ml_summary_file "$ML_PRESERVED" available custom none)
+	ml_emit_begin 1 ok ''
+	json_add_string raw_url "$ML_RAW_URL"
+	json_add_int generation "$ML_GENERATION"
+	json_add_string mode "$ML_MODE"
+	json_add_boolean recovery_required "$recovery"
+	ml_json_add_summary active "$active"
+	ml_json_add_summary factory "$factory"
+	ml_json_add_summary candidate "$ML_CANDIDATE_SUMMARY"
+	ml_json_add_summary last_known_good "$ML_LKG_SUMMARY"
+	ml_json_add_summary custom "$ML_CUSTOM_SUMMARY"
+	ml_json_add_summary preserved "$preserved"
+	ml_emit_end
+}
+
+ml_fetch_raw() {
+	local body meta curl_status http effective downloaded
+	ml_prepare_temp_dir || return 1
+	body=$ML_TEMP_DIR/remote.sh
+	meta=$ML_TEMP_DIR/curl.meta
+	: >"$body" && : >"$meta" && chmod 0600 "$body" "$meta" || return 1
+	if curl --disable --silent --show-error --proto '=https' --max-redirs 0 --connect-timeout "$ML_CONNECT_TIMEOUT" --max-time "$ML_TOTAL_TIMEOUT" --max-filesize "$ML_LIMIT" \
+		--output "$body" --write-out '%{http_code}\n%{url_effective}\n%{size_download}\n' -- "$ML_RAW_URL" >"$meta" 2>/dev/null; then
+		curl_status=0
+	else
+		curl_status=$?
+	fi
+	ML_FETCH_FILE=$body
+	[ "$curl_status" -eq 0 ] || {
+		ML_FETCH_RESULT=download_failed
+		return 0
+	}
+	http=$(sed -n '1p' "$meta")
+	effective=$(sed -n '2p' "$meta")
+	downloaded=$(wc -c <"$body" 2>/dev/null) || {
+		ML_FETCH_RESULT=download_failed
+		return 0
+	}
+	[ "$downloaded" -le "$ML_LIMIT" ] 2>/dev/null || {
+		ML_FETCH_RESULT=download_failed
+		return 0
+	}
+	ML_FETCH_RESULT=$(ml_policy_http "$http" "$effective")
+	[ "$ML_FETCH_RESULT" = ok ] || return 0
+	ml_static_accept "$body" 600 || {
+		ML_FETCH_RESULT=source_rejected
+		return 0
+	}
+	ML_FETCH_RESULT=ok
+	return 0
+}
+
+ml_active_version_hash() {
+	ML_ACTIVE_VERSION=$(ml_summary_value "$ML_ACTIVE_SUMMARY" version) || ML_ACTIVE_VERSION=''
+	ML_ACTIVE_HASH=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || ML_ACTIVE_HASH=''
+}
+
+ml_rpc_check() {
+	local remote remote_hash relation available downgrade
+	ml_fetch_raw || ml_fail_empty internal_error 'cannot prepare download'
+	case $ML_FETCH_RESULT in download_failed) ml_fail_empty download_failed 'Raw download failed' ;; source_rejected) ml_fail_empty source_rejected 'Raw source rejected' ;; esac
+	ml_metadata "$ML_FETCH_FILE" || ml_fail_empty source_rejected 'Raw metadata rejected'
+	remote=$(ml_summary_file "$ML_FETCH_FILE" available raw managed)
+	remote_hash=$(ml_summary_value "$remote" sha256)
+	ml_active_version_hash
+	relation=$(ml_policy_relation "$ML_ACTIVE_VERSION" "$ML_META_VERSION" "$ML_ACTIVE_HASH" "$remote_hash")
+	if [ "$remote_hash" = "$ML_ACTIVE_HASH" ]; then available=0; else available=1; fi
+	if [ "$relation" = older ]; then downgrade=1; else downgrade=0; fi
+	ml_emit_begin 1 ok ''
+	json_add_boolean available "$available"
+	json_add_boolean downgrade "$downgrade"
+	json_add_string relation "$relation"
+	json_add_string active_sha256 "$ML_ACTIVE_HASH"
+	ml_json_add_summary remote "$remote"
+	ml_emit_end
+}
+
+ml_rpc_stage() {
+	local current_hash active_hash remote_hash remote_size new_generation new_summary old_backup code
+	current_hash=$(ml_summary_value "$ML_CANDIDATE_SUMMARY" sha256) || current_hash=''
+	ml_check_generation "$current_hash"
+	ml_fetch_raw || ml_fail_empty internal_error 'cannot prepare download'
+	case $ML_FETCH_RESULT in download_failed) ml_fail_empty download_failed 'Raw download failed' ;; source_rejected) ml_fail_empty source_rejected 'Raw source rejected' ;; esac
+	remote_hash=$(ml_sha256 "$ML_FETCH_FILE")
+	remote_size=$(wc -c <"$ML_FETCH_FILE" 2>/dev/null) || ml_fail_empty internal_error 'candidate size unavailable'
+	ml_has_space "$((remote_size * 2))" || ml_fail_empty internal_error 'insufficient script-state space'
+	active_hash=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || active_hash=''
+	if [ "$remote_hash" = "$current_hash" ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		ml_json_add_summary candidate "$ML_CANDIDATE_SUMMARY"
+		ml_emit_end
+		return
+	fi
+	if [ "$remote_hash" = "$active_hash" ] && [ -z "$current_hash" ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		ml_json_add_summary candidate "$ML_CANDIDATE_SUMMARY"
+		ml_emit_end
+		return
+	fi
+	old_backup=''
+	if ml_regular "$ML_CANDIDATE"; then
+		old_backup=$ML_TEMP_DIR/candidate-old
+		if [ -e "$old_backup" ] || [ -L "$old_backup" ]; then ml_fail_empty internal_error 'candidate backup failed'; fi
+		if ! cat "$ML_CANDIDATE" >"$old_backup" || ! chmod 0600 "$old_backup"; then ml_fail_empty internal_error 'candidate backup failed'; fi
+	fi
+	ml_atomic_copy "$ML_FETCH_FILE" "$ML_CANDIDATE" 0600 || ml_fail_empty internal_error 'candidate write failed'
+	new_summary=$(ml_summary_file "$ML_CANDIDATE" staged raw managed)
+	new_generation=$((ML_GENERATION + 1))
+	if ! ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$new_summary" "$ML_LKG_SUMMARY" "$ML_CUSTOM_SUMMARY"; then
+		if [ -n "$old_backup" ]; then ml_atomic_copy "$old_backup" "$ML_CANDIDATE" 0600 || :; else rm -f "$ML_CANDIDATE"; fi
+		rm -f "$old_backup"
+		ml_fail_empty internal_error 'state write failed'
+	fi
+	rm -f "$old_backup"
+	code=ok
+	ml_emit_begin 1 "$code" ''
+	json_add_int generation "$new_generation"
+	ml_json_add_summary candidate "$new_summary"
+	ml_emit_end
+}
+
+ml_run_self_test() {
+	local script output status content api version action outcome ok
+	script=$1
+	ml_prepare_temp_dir || return 1
+	output=$ML_TEMP_DIR/self-test.json
+	: >"$output" && chmod 0600 "$output" || return 1
+	if (
+		ulimit -f 17 2>/dev/null || :
+		timeout -s KILL "$ML_SELF_TEST_TIMEOUT" /bin/sh "$script" self-test >"$output" 2>/dev/null
+	); then status=0; else status=$?; fi
+	[ "$status" -eq 0 ] || return 1
+	[ "$(wc -c <"$output" 2>/dev/null)" -le "$ML_SELF_TEST_OUTPUT_LIMIT" ] 2>/dev/null || return 1
+	content=$(
+		cat "$output"
+		printf x
+	)
+	content=${content%x}
+	ml_trim_json_object "$content" || return 1
+	json_load "$content" >/dev/null 2>&1 || return 1
+	json_get_var ok ok || return 1
+	json_get_var action action || return 1
+	json_get_var outcome outcome || return 1
+	json_get_var api api || return 1
+	json_get_var version version || return 1
+	case $ok in true | 1) ;; *) return 1 ;; esac
+	[ "$action" = self-test ] && [ "$outcome" = self_test_pass ] && [ "$api" = 3 ] && [ "$version" = "$ML_META_VERSION" ]
+}
+
+ml_rpc_validate() {
+	local file summary status current_hash validation_backup self_test_status new_summary new_generation
+	case $ML_REQ_SOURCE in candidate)
+		file=$ML_CANDIDATE
+		summary=$ML_CANDIDATE_SUMMARY
+		;;
+	custom)
+		file=$ML_CUSTOM
+		summary=$ML_CUSTOM_SUMMARY
+		;;
+	esac
+	current_hash=$(ml_summary_value "$summary" sha256) || current_hash=''
+	ml_check_generation "$current_hash"
+	case $(ml_summary_value "$summary" present 2>/dev/null) in true | 1) ;; *) ml_fail_empty not_found 'source is absent' ;; esac
+	[ "$current_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$current_hash"
+	status=$(ml_summary_value "$summary" status) || status=none
+	if [ "$status" = validated ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		json_add_string source "$ML_REQ_SOURCE"
+		ml_json_add_summary summary "$summary"
+		json_add_object validation
+		json_add_string self_test passed
+		json_close_object
+		ml_emit_end
+		return
+	fi
+	case $ML_REQ_SOURCE:$status in candidate:staged | custom:draft) ;; *) ml_fail_empty invalid_state 'source is not staged' ;; esac
+	[ "$ML_REQ_CONFIRM_EXECUTE" = true ] || ml_fail_empty confirmation_required 'root-code execution confirmation required'
+	ml_static_accept "$file" 600 || ml_fail_empty source_rejected 'source failed static validation'
+	ml_prepare_temp_dir || ml_fail_empty internal_error 'cannot prepare validation'
+	validation_backup=$ML_TEMP_DIR/validation-original
+	if ! cat "$file" >"$validation_backup" || ! chmod 0600 "$validation_backup"; then ml_fail_empty internal_error 'cannot snapshot validation source'; fi
+	self_test_status=0
+	ml_run_self_test "$file" || self_test_status=1
+	if ! ml_static_accept "$file" 600 || [ "$(ml_sha256 "$file")" != "$current_hash" ]; then
+		ml_atomic_copy "$validation_backup" "$file" 0600 || ml_fail_empty internal_error 'cannot restore changed validation source'
+		ml_fail_empty validation_failed 'source changed during self-test'
+	fi
+	[ "$self_test_status" -eq 0 ] || ml_fail_empty validation_failed 'self-test failed'
+	new_summary=$(ml_summary_file "$file" validated "$(ml_summary_value "$summary" source)" "$(ml_summary_value "$summary" mode)")
+	new_generation=$((ML_GENERATION + 1))
+	if [ "$ML_REQ_SOURCE" = candidate ]; then
+		ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$new_summary" "$ML_LKG_SUMMARY" "$ML_CUSTOM_SUMMARY" || ml_fail_empty internal_error 'state write failed'
+	else
+		ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$ML_CANDIDATE_SUMMARY" "$ML_LKG_SUMMARY" "$new_summary" || ml_fail_empty internal_error 'state write failed'
+	fi
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$new_generation"
+	json_add_string source "$ML_REQ_SOURCE"
+	ml_json_add_summary summary "$new_summary"
+	json_add_object validation
+	json_add_string self_test passed
+	json_close_object
+	ml_emit_end
+}
+
+ml_first_status_instance() {
+	local sections section enabled interface v6face ua_type
+	command -v uci >/dev/null 2>&1 || return 1
+	sections=$(uci -q show multilogin 2>/dev/null | sed -n 's/^multilogin\.\([^.=]*\)=instance$/\1/p' | LC_ALL=C sort) || return 1
+	for section in $sections; do
+		enabled=$(uci -q get "multilogin.$section.enabled" 2>/dev/null) || enabled=0
+		[ "$enabled" = 1 ] || continue
+		interface=$(uci -q get "multilogin.$section.interface" 2>/dev/null) || interface=''
+		[ -n "$interface" ] || continue
+		case $interface in *[!A-Za-z0-9_.:-]*) continue ;; esac
+		v6face=$(uci -q get "multilogin.$section.v6face" 2>/dev/null) || v6face=''
+		case $v6face in *[!A-Za-z0-9_.:-]*) continue ;; esac
+		ua_type=$(uci -q get "multilogin.$section.ua_type" 2>/dev/null) || ua_type=pc
+		case $ua_type in pc | mobile) ;; *) ua_type=pc ;; esac
+		ML_STATUS_INTERFACE=$interface
+		ML_STATUS_V6FACE=$v6face
+		ML_STATUS_UA_TYPE=$ua_type
+		return 0
+	done
+	return 2
+}
+
+ml_run_status_validation() {
+	local selection output status content ok action outcome api version
+	ML_STATUS_RESULT=''
+	ml_first_status_instance
+	selection=$?
+	[ "$selection" -ne 1 ] || return 1
+	if [ "$selection" -eq 2 ]; then
+		ML_STATUS_RESULT=skipped_no_instance
+		return 0
+	fi
+	ml_prepare_temp_dir || return 1
+	output=$ML_TEMP_DIR/status.json
+	: >"$output" && chmod 0600 "$output" || return 1
+	set -- status --mwan3 "$ML_STATUS_INTERFACE" --ua-type "$ML_STATUS_UA_TYPE"
+	[ -z "$ML_STATUS_V6FACE" ] || set -- "$@" --v6face "$ML_STATUS_V6FACE"
+	if (
+		ulimit -f 17 2>/dev/null || :
+		timeout -s KILL 35 /bin/sh "$ML_ACTIVE" "$@" >"$output" 2>/dev/null
+	); then status=0; else status=$?; fi
+	case $status in 0 | 1) ;; *) return 1 ;; esac
+	[ "$(wc -c <"$output" 2>/dev/null)" -le "$ML_SELF_TEST_OUTPUT_LIMIT" ] 2>/dev/null || return 1
+	content=$(
+		cat "$output"
+		printf x
+	)
+	content=${content%x}
+	ml_trim_json_object "$content" || return 1
+	json_load "$content" >/dev/null 2>&1 || return 1
+	json_get_var ok ok || return 1
+	json_get_var action action || return 1
+	json_get_var outcome outcome || return 1
+	json_get_var api api || return 1
+	json_get_var version version || return 1
+	case $ok in true | 1) ;; *) return 1 ;; esac
+	[ "$action" = status ] && [ "$api" = 3 ] && [ "$version" = "$ML_META_VERSION" ] || return 1
+	case $status:$outcome in 0:online | 1:offline)
+		ML_STATUS_RESULT=$outcome
+		return 0
+		;;
+	*) return 1 ;; esac
+}
+
+ml_restore_after_activation_failure() {
+	local operation source selected previous backup
+	operation=$1
+	source=$2
+	selected=$3
+	previous=$4
+	backup=$5
+	if ml_atomic_copy "$ML_BACKUP" "$ML_ACTIVE" 0755 && [ "$(ml_sha256 "$ML_ACTIVE")" = "$backup" ]; then
+		ml_clear_transaction
+		case $? in 0) ml_fail_activation 0 ;; *) ml_fail_activation 1 ;; esac
+	fi
+	ml_journal_write "$ML_GENERATION" "$operation" "$source" "$selected" "$previous" "$backup" rollback_required || :
+	ml_fail_activation 1
+}
+
+ml_activate_common() {
+	local operation journal_source selected_file selected_summary selected_source selected_mode selected_hash previous backup_hash active_size selected_size new_lkg new_active new_generation validation
+	operation=$1
+	journal_source=$2
+	selected_file=$3
+	selected_summary=$4
+	selected_source=$5
+	selected_mode=$6
+	selected_hash=$(ml_summary_value "$selected_summary" sha256) || selected_hash=''
+	previous=$ML_ACTIVE_SUMMARY
+	ml_regular "$ML_ACTIVE" || ml_fail_empty invalid_state 'active script is absent'
+	active_size=$(wc -c <"$ML_ACTIVE" 2>/dev/null) || ml_fail_empty internal_error 'active size unavailable'
+	selected_size=$(wc -c <"$selected_file" 2>/dev/null) || ml_fail_empty internal_error 'selected size unavailable'
+	ml_has_space "$((active_size * 3 + selected_size))" || ml_fail_empty internal_error 'insufficient script-state space'
+	ml_atomic_copy "$ML_ACTIVE" "$ML_BACKUP" 0600 || ml_fail_empty internal_error 'activation backup failed'
+	backup_hash=$(ml_sha256 "$ML_BACKUP") || {
+		rm -f "$ML_BACKUP"
+		ml_fail_empty internal_error 'activation backup failed'
+	}
+	if [ "$backup_hash" != "$(ml_summary_value "$previous" sha256)" ]; then
+		rm -f "$ML_BACKUP"
+		ml_fail_empty internal_error 'active state mismatch'
+	fi
+	if ! ml_journal_write "$ML_GENERATION" "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash" prepared; then
+		rm -f "$ML_BACKUP"
+		ml_fail_empty internal_error 'journal write failed'
+	fi
+	ml_atomic_copy "$selected_file" "$ML_ACTIVE" 0755 || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_journal_write "$ML_GENERATION" "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash" active_replaced || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_static_accept "$ML_ACTIVE" 755 || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_run_self_test "$ML_ACTIVE" || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_run_status_validation || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_static_accept "$ML_ACTIVE" 755 || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	[ "$(ml_sha256 "$ML_ACTIVE")" = "$selected_hash" ] || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	ml_journal_write "$ML_GENERATION" "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash" verified || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	new_lkg=$(ml_summary_file "$ML_BACKUP" available "$(ml_summary_value "$previous" source)" "$(ml_summary_value "$previous" mode)")
+	[ "$(ml_sha256 "$ML_ACTIVE")" = "$selected_hash" ] || ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	new_active=$(ml_summary_file "$ML_ACTIVE" active "$selected_source" "$selected_mode")
+	new_generation=$((ML_GENERATION + 1))
+	if ! ml_state_write "$new_generation" "$selected_mode" "$new_active" "$ML_CANDIDATE_SUMMARY" "$new_lkg" "$ML_CUSTOM_SUMMARY"; then
+		ml_restore_after_activation_failure "$operation" "$journal_source" "$selected_hash" "$previous" "$backup_hash"
+	fi
+	ML_GENERATION=$new_generation
+	ml_atomic_copy "$ML_BACKUP" "$ML_LKG" 0600 || ml_fail_activation 1
+	ml_summary_matches_file "$new_lkg" "$ML_LKG" 600 || ml_fail_activation 1
+	ml_clear_transaction || ml_fail_activation 1
+	validation=$ML_STATUS_RESULT
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$new_generation"
+	json_add_string mode "$selected_mode"
+	ml_json_add_summary active "$new_active"
+	json_add_object validation
+	json_add_string self_test passed
+	json_add_string status "$validation"
+	json_close_object
+	ml_emit_end
+}
+
+ml_rpc_activate() {
+	local selected_file selected_summary status selected_hash active_hash active_source active_mode selected_source selected_mode downgrade
+	case $ML_REQ_SOURCE in
+	candidate)
+		selected_file=$ML_CANDIDATE
+		selected_summary=$ML_CANDIDATE_SUMMARY
+		selected_source=raw
+		selected_mode=managed
+		;;
+	custom)
+		selected_file=$ML_CUSTOM
+		selected_summary=$ML_CUSTOM_SUMMARY
+		selected_source=custom
+		selected_mode=custom
+		;;
+	esac
+	selected_hash=$(ml_summary_value "$selected_summary" sha256) || selected_hash=''
+	ml_check_generation "$selected_hash"
+	case $(ml_summary_value "$selected_summary" present 2>/dev/null) in true | 1) ;; *) ml_fail_empty not_found 'source is absent' ;; esac
+	[ "$selected_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$selected_hash"
+	[ "$ML_REQ_CONFIRM_ACTIVATE" = true ] || ml_fail_empty confirmation_required 'activation confirmation required'
+	status=$(ml_summary_value "$selected_summary" status) || status=none
+	[ "$status" = validated ] || ml_fail_empty invalid_state 'source is not validated'
+	ml_static_accept "$selected_file" 600 || ml_fail_empty source_rejected 'source failed static validation'
+	active_hash=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || active_hash=''
+	active_source=$(ml_summary_value "$ML_ACTIVE_SUMMARY" source) || active_source=unknown
+	active_mode=$(ml_summary_value "$ML_ACTIVE_SUMMARY" mode) || active_mode=none
+	if [ "$active_hash" = "$selected_hash" ] && [ "$active_source" = "$selected_source" ] && [ "$active_mode" = "$selected_mode" ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		json_add_string mode "$active_mode"
+		ml_json_add_summary active "$ML_ACTIVE_SUMMARY"
+		json_add_object validation
+		json_add_string self_test passed
+		json_add_string status skipped_no_instance
+		json_close_object
+		ml_emit_end
+		return
+	fi
+	[ "$(ml_policy_boolean "$ML_REQ_ALLOW_DOWNGRADE")" = ok ] || ml_fail_empty invalid_request 'invalid downgrade flag'
+	downgrade=$(ml_policy_downgrade "$ML_REQ_SOURCE" "$(ml_summary_value "$ML_ACTIVE_SUMMARY" version)" "$(ml_summary_value "$selected_summary" version)" "$ML_REQ_ALLOW_DOWNGRADE")
+	case $downgrade in ok) ;; confirmation_required) ml_fail_empty confirmation_required 'downgrade confirmation required' ;; *) ml_fail_empty source_rejected 'version metadata rejected' ;; esac
+	ml_activate_common activate "$ML_REQ_SOURCE" "$selected_file" "$selected_summary" "$selected_source" "$selected_mode"
+}
+
+ml_rpc_rollback_restore() {
+	local operation selected_file selected_summary journal_source selected_source selected_mode selected_hash active_hash active_source active_mode
+	operation=$1
+	if [ "$operation" = rollback ]; then
+		selected_file=$ML_LKG
+		selected_summary=$ML_LKG_SUMMARY
+		journal_source=last_known_good
+		selected_source=$(ml_summary_value "$selected_summary" source) || selected_source=unknown
+		selected_mode=$(ml_summary_value "$selected_summary" mode) || selected_mode=none
+	else
+		selected_file=$ML_FACTORY
+		selected_summary=$(ml_summary_file "$ML_FACTORY" available factory managed)
+		journal_source=factory
+		selected_source=factory
+		selected_mode=managed
+	fi
+	selected_hash=$(ml_summary_value "$selected_summary" sha256) || selected_hash=''
+	ml_check_generation "$selected_hash"
+	case $(ml_summary_value "$selected_summary" present 2>/dev/null) in true | 1) ;; *) ml_fail_empty not_found 'restore source is absent' ;; esac
+	[ "$selected_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$selected_hash"
+	[ "$ML_REQ_CONFIRM_ACTIVATE" = true ] || ml_fail_empty confirmation_required 'activation confirmation required'
+	[ "$(ml_summary_value "$selected_summary" status)" = available ] || ml_fail_empty not_found 'restore source is absent'
+	if [ "$operation" = rollback ]; then
+		ml_static_accept "$selected_file" 600 || ml_fail_empty source_rejected 'restore source rejected'
+	else
+		ml_static_accept "$selected_file" 755 || ml_fail_empty source_rejected 'restore source rejected'
+	fi
+	active_hash=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || active_hash=''
+	active_source=$(ml_summary_value "$ML_ACTIVE_SUMMARY" source) || active_source=unknown
+	active_mode=$(ml_summary_value "$ML_ACTIVE_SUMMARY" mode) || active_mode=none
+	if [ "$active_hash" = "$selected_hash" ] && [ "$active_source" = "$selected_source" ] && [ "$active_mode" = "$selected_mode" ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		json_add_string mode "$active_mode"
+		ml_json_add_summary active "$ML_ACTIVE_SUMMARY"
+		json_add_object validation
+		json_add_string self_test passed
+		json_add_string status skipped_no_instance
+		json_close_object
+		ml_emit_end
+		return
+	fi
+	ml_activate_common "$operation" "$journal_source" "$selected_file" "$selected_summary" "$selected_source" "$selected_mode"
+}
+
+ml_rpc_get_draft() {
+	local content status
+	ml_secure_file "$ML_CUSTOM" 600 || ml_fail_empty not_found 'draft is absent'
+	content=$(
+		cat "$ML_CUSTOM"
+		printf x
+	)
+	content=${content%x}
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$ML_GENERATION"
+	json_add_string source draft
+	ml_json_add_summary summary "$ML_CUSTOM_SUMMARY"
+	json_add_string content "$content"
+	ml_emit_end
+}
+
+ml_rpc_save_draft() {
+	local current_hash content_file content_hash content_size new_summary new_generation old_backup
+	current_hash=$(ml_summary_value "$ML_CUSTOM_SUMMARY" sha256) || current_hash=''
+	ml_check_generation "$current_hash"
+	if [ -z "$current_hash" ]; then
+		[ -z "$ML_REQ_BASE_SHA256" ] || ml_fail_conflict ''
+	else
+		[ "$ML_REQ_BASE_SHA256" = "$current_hash" ] || ml_fail_conflict "$current_hash"
+	fi
+	ml_prepare_temp_dir || ml_fail_empty internal_error 'cannot prepare draft'
+	content_file=$ML_TEMP_DIR/custom.draft
+	if ! printf '%s' "$ML_REQ_CONTENT" >"$content_file" || ! chmod 0600 "$content_file"; then ml_fail_empty internal_error 'cannot prepare draft'; fi
+	[ "$(ml_policy_content_file "$content_file")" = ok ] || ml_fail_empty invalid_request 'draft must be non-empty UTF-8 text within 256 KiB'
+	content_size=$(wc -c <"$content_file" 2>/dev/null) || ml_fail_empty internal_error 'cannot size draft'
+	ml_has_space "$((content_size * 2))" || ml_fail_empty internal_error 'insufficient script-state space'
+	content_hash=$(ml_sha256 "$content_file") || ml_fail_empty internal_error 'cannot hash draft'
+	if [ "$content_hash" = "$current_hash" ]; then
+		ml_emit_begin 1 no_change ''
+		json_add_int generation "$ML_GENERATION"
+		ml_json_add_summary custom "$ML_CUSTOM_SUMMARY"
+		ml_emit_end
+		return
+	fi
+	old_backup=''
+	if ml_regular "$ML_CUSTOM"; then
+		old_backup=$ML_TEMP_DIR/custom-old
+		if [ -e "$old_backup" ] || [ -L "$old_backup" ]; then ml_fail_empty internal_error 'draft backup failed'; fi
+		if ! cat "$ML_CUSTOM" >"$old_backup" || ! chmod 0600 "$old_backup"; then ml_fail_empty internal_error 'draft backup failed'; fi
+	fi
+	ml_atomic_copy "$content_file" "$ML_CUSTOM" 0600 || ml_fail_empty internal_error 'draft write failed'
+	new_summary=$(ml_summary_file "$ML_CUSTOM" draft custom custom)
+	new_generation=$((ML_GENERATION + 1))
+	if ! ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$ML_CANDIDATE_SUMMARY" "$ML_LKG_SUMMARY" "$new_summary"; then
+		if [ -n "$old_backup" ]; then ml_atomic_copy "$old_backup" "$ML_CUSTOM" 0600 || :; else rm -f "$ML_CUSTOM"; fi
+		rm -f "$old_backup"
+		ml_fail_empty internal_error 'state write failed'
+	fi
+	rm -f "$old_backup"
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$new_generation"
+	ml_json_add_summary custom "$new_summary"
+	ml_emit_end
+}
+
+ml_rpc_discard_draft() {
+	local current_hash status held new_generation
+	current_hash=$(ml_summary_value "$ML_CUSTOM_SUMMARY" sha256) || current_hash=''
+	ml_check_generation "$current_hash"
+	status=$(ml_summary_value "$ML_CUSTOM_SUMMARY" status) || status=none
+	[ "$status" != none ] || ml_fail_empty not_found 'draft is absent'
+	[ "$current_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$current_hash"
+	held=$(umask 077 && mktemp "$ML_STATE_DIR/.custom-discard.XXXXXX") || ml_fail_empty internal_error 'draft discard failed'
+	if ! mv "$ML_CUSTOM" "$held"; then
+		rm -f "$held"
+		ml_fail_empty internal_error 'draft discard failed'
+	fi
+	ML_DISCARD_HELD=$held
+	new_generation=$((ML_GENERATION + 1))
+	if ! ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$ML_CANDIDATE_SUMMARY" "$ML_LKG_SUMMARY" "$(ml_summary_none)"; then
+		mv "$held" "$ML_CUSTOM" 2>/dev/null || :
+		ML_DISCARD_HELD=''
+		ml_fail_empty internal_error 'state write failed'
+	fi
+	rm -f "$held"
+	ML_DISCARD_HELD=''
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$new_generation"
+	ml_json_add_summary custom "$(ml_summary_none)"
+	ml_emit_end
+}
+
+ml_rpc() {
+	local method
+	method=$1
+	ml_request_text || ml_fail_empty invalid_request 'invalid request'
+	ml_parse_request "$method" || ml_fail_empty invalid_request 'invalid request'
+	if [ "$method" = script_info ]; then
+		ml_rpc_info
+		return
+	fi
+	ml_recover || {
+		ml_state_load || ML_GENERATION=0
+		ml_fail_recovery
+	}
+	ml_state_load || ml_fail_empty internal_error 'invalid script state'
+	ml_refresh_effective_state || ml_fail_empty internal_error 'script state does not match fixed files'
+	case $method in
+	script_check) ml_rpc_check ;;
+	script_stage) ml_rpc_stage ;;
+	script_validate) ml_rpc_validate ;;
+	script_activate) ml_rpc_activate ;;
+	script_rollback) ml_rpc_rollback_restore rollback ;;
+	script_restore) ml_rpc_rollback_restore restore ;;
+	script_get_draft) ml_rpc_get_draft ;;
+	script_save_draft) ml_rpc_save_draft ;;
+	script_discard_draft) ml_rpc_discard_draft ;;
+	*) ml_fail_empty invalid_request 'unknown method' ;;
+	esac
+}
+
+case ${1:-} in
+recover)
+	[ "$#" -eq 1 ] || exit 1
+	ml_acquire_lock || exit 1
+	ml_recover
+	exit $?
+	;;
+rpc)
+	[ "$#" -eq 2 ] || exit 1
+	case $2 in script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_save_draft | script_discard_draft) ;; *) exit 1 ;; esac
+	ml_acquire_lock || {
+		ML_GENERATION=0
+		ml_fail_empty internal_error 'script lock unavailable'
+	}
+	ml_rpc "$2"
+	;;
+*) exit 1 ;;
+esac

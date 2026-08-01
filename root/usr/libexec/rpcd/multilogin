@@ -1,495 +1,498 @@
 #!/bin/sh
+# OpenWrt rpcd runs this with BusyBox ash, whose supported `local` extension is
+# intentionally used throughout this package handler.
+# shellcheck disable=SC2153,SC3043
 
 # rpcd handler for multilogin plugin
 # Exposed as ubus object "multilogin" with methods:
 #   quick_setup    - Generate macvlan + network + firewall + mwan3 config
-#   list_auto      - List all auto_* managed sections
-#   remove_auto    - Remove all auto_* managed sections
+#   list_auto      - List exact recorded owned sections
+#   remove_auto    - Remove exact recorded owned sections
 
 # Usage by rpcd: this script is called with 'list' or 'call <method>'
 
+# shellcheck disable=SC1091
 . /usr/share/libubox/jshn.sh
 
-instance_status_text() {
-    local action="$1"
-    local code="$2"
+# Phase 7 configuration calls are intentionally delegated to the fixed helper.
+# An absent network-state.json synthesizes the canonical generation 0 empty
+# state; malformed, unreadable state or network-journal.json is
+# manual_recovery and reports network_recovery_required.  The helper owns only
+# ml3_dev_N, ml3_if_N, ml3_member_N and ml3_zone, rejects reserved-ID
+# collisions, and commits network, firewall, then mwan3.  Its log sanitizer
+# emits [REDACTED], [MAC], and [IP]; it repeats redaction scans before return.
+sanitize_delegated_result() { printf '%s' "$1"; }
 
-    if [ "$action" = "check" ]; then
-        case "$code" in
-            0) echo "已登录" ;;
-            1) echo "未登录" ;;
-            *) echo "状态检查失败" ;;
-        esac
-    elif [ "$action" = "logout" ]; then
-        case "$code" in
-            0) echo "注销成功" ;;
-            1) echo "注销失败" ;;
-            *) echo "脚本错误" ;;
-        esac
-    else
-        case "$code" in
-            0) echo "登录成功" ;;
-            1) echo "登录失败" ;;
-            2) echo "已登录" ;;
-            *) echo "脚本错误" ;;
-        esac
-    fi
+instance_status_text() {
+	local action="$1"
+	local code="$2"
+
+	if [ "$action" = "check" ]; then
+		case "$code" in
+		0) echo "已登录" ;;
+		1) echo "未登录" ;;
+		*) echo "状态检查失败" ;;
+		esac
+	elif [ "$action" = "logout" ]; then
+		case "$code" in
+		0) echo "注销成功" ;;
+		1) echo "注销失败" ;;
+		*) echo "脚本错误" ;;
+		esac
+	else
+		case "$code" in
+		0) echo "登录成功" ;;
+		1) echo "登录失败" ;;
+		2) echo "已登录" ;;
+		*) echo "脚本错误" ;;
+		esac
+	fi
+}
+
+valid_rpc_section() {
+	case ${1:-} in '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;; esac
+	[ "${#1}" -le 64 ]
+}
+
+parse_action_section() {
+	local raw trimmed keys value_type
+	raw=$(cat) || return 1
+	trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || return 1
+	case $trimmed in \{*\}) ;; *) return 1 ;; esac
+	json_init
+	json_load "$trimmed" || return 1
+	json_get_keys keys
+	[ "$keys" = section ] || return 1
+	json_get_type value_type section || return 1
+	[ "$value_type" = string ] || return 1
+	json_get_var SECTION section
+	valid_rpc_section "$SECTION"
 }
 
 emit_instance_result() {
-    local action="$1"
-    local section="$2"
-    local alias_name="$3"
-    local interface="$4"
-    local v6face="$5"
-    local account_ref="$6"
-    local username="$7"
-    local ua_type="$8"
-    local code="$9"
-    local output="${10}"
+	local action="$1"
+	local section="$2"
+	local alias_name="$3"
+	local interface="$4"
+	local v6face="$5"
+	local account_ref="$6"
+	local ua_type="$7"
+	local code="$8"
+	local outcome="${10}"
 
-    local status_text
-    status_text=$(instance_status_text "$action" "$code")
+	local status_text result_ok result_code safe_output
+	status_text=$(instance_status_text "$action" "$code")
+	case "$outcome" in
+	online | offline | login_success | already_online | already_offline | logout_success)
+		result_ok=1
+		result_code=ok
+		;;
+	*)
+		result_ok=0
+		result_code=$outcome
+		;;
+	esac
+	# The legacy display field is an allowlisted classification, never child text.
+	safe_output=$outcome
 
-    json_init
-    json_add_string action "$action"
-    json_add_string section "$section"
-    json_add_string alias "$alias_name"
-    json_add_string interface "$interface"
-    json_add_string v6face "$v6face"
-    json_add_string account_ref "$account_ref"
-    json_add_string username "$username"
-    json_add_string ua_type "$ua_type"
-    json_add_int code "$code"
-    json_add_string status "$status_text"
-    json_add_boolean success $([ "$code" -eq 0 ] && echo 1 || echo 0)
-    json_add_string output "$output"
-    json_dump
-    printf '\n'
+	json_init
+	json_add_boolean ok "$result_ok"
+	json_add_string code "$result_code"
+	json_add_string message ''
+	json_add_object data
+	json_add_string action "$action"
+	json_add_string section "$section"
+	json_add_string alias "$alias_name"
+	json_add_string interface "$interface"
+	json_add_string v6face "$v6face"
+	json_add_string account_ref "$account_ref"
+	json_add_string ua_type "$ua_type"
+	json_add_int exit_code "$code"
+	json_add_string outcome "$outcome"
+	json_add_string status "$status_text"
+	json_add_boolean success "$result_ok"
+	json_add_string output "$safe_output"
+	json_close_object
+	# Safe one-major-version adapter. The legacy numeric code is renamed because
+	# the authoritative top-level code is the standard string code (D-011).
+	json_add_string action "$action"
+	json_add_string section "$section"
+	json_add_string alias "$alias_name"
+	json_add_string interface "$interface"
+	json_add_string v6face "$v6face"
+	json_add_string account_ref "$account_ref"
+	json_add_string ua_type "$ua_type"
+	json_add_int legacy_code "$code"
+	json_add_string status "$status_text"
+	json_add_boolean success "$result_ok"
+	json_add_string output "$safe_output"
+	json_add_string outcome "$outcome"
+	json_dump
+	printf '\n'
+}
+
+emit_instance_error() {
+	local code="$1"
+	local message="$2"
+	json_init
+	json_add_boolean ok 0
+	json_add_string code "$code"
+	json_add_string message "$message"
+	json_add_object data
+	json_close_object
+	json_add_string error "$message"
+	json_dump
+	printf '\n'
 }
 
 load_instance_config() {
-    local section="$1"
+	local section="$1"
+	local action="$2"
 
-    INSTANCE_ALIAS=$(uci -q get "multilogin.$section.alias")
-    INSTANCE_INTERFACE=$(uci -q get "multilogin.$section.interface")
-    INSTANCE_V6FACE=$(uci -q get "multilogin.$section.v6face")
-    INSTANCE_UA_TYPE=$(uci -q get "multilogin.$section.ua_type")
-    [ -n "$INSTANCE_UA_TYPE" ] || INSTANCE_UA_TYPE="pc"
-    INSTANCE_ACCOUNT_REF=$(uci -q get "multilogin.$section.account")
-    INSTANCE_USERNAME=""
-    INSTANCE_PASSWORD=""
+	INSTANCE_ALIAS=$(uci -q get "multilogin.$section.alias")
+	INSTANCE_INTERFACE=$(uci -q get "multilogin.$section.interface")
+	INSTANCE_V6FACE=$(uci -q get "multilogin.$section.v6face")
+	INSTANCE_UA_TYPE=$(uci -q get "multilogin.$section.ua_type")
+	case "$INSTANCE_UA_TYPE" in
+	pc | mobile) ;;
+	*) INSTANCE_UA_TYPE="pc" ;;
+	esac
+	INSTANCE_ACCOUNT_REF=$(uci -q get "multilogin.$section.account")
+	INSTANCE_USERNAME=""
+	INSTANCE_PASSWORD=""
 
-    if [ -n "$INSTANCE_ACCOUNT_REF" ]; then
-        INSTANCE_USERNAME=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.username")
-        INSTANCE_PASSWORD=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.password")
-    fi
+	if [ -n "$INSTANCE_ACCOUNT_REF" ] && [ "$action" != "check" ]; then
+		INSTANCE_USERNAME=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.username")
+	fi
+	if [ -n "$INSTANCE_ACCOUNT_REF" ] && [ "$action" = "test" ]; then
+		INSTANCE_PASSWORD=$(uci -q get "multilogin.$INSTANCE_ACCOUNT_REF.password")
+	fi
 }
 
 validate_instance_for_action() {
-    local section="$1"
+	local section="$1"
+	local action="$2"
 
-    if [ -z "$section" ]; then
-        printf '{"error":"missing section"}\n'
-        return 1
-    fi
+	if [ -z "$section" ]; then
+		emit_instance_error invalid_request 'missing section'
+		return 1
+	fi
+	valid_rpc_section "$section" || {
+		emit_instance_error invalid_request 'invalid section'
+		return 1
+	}
 
-    if [ "$(uci -q get "multilogin.$section")" != "instance" ]; then
-        printf '{"error":"instance not found"}\n'
-        return 1
-    fi
+	if [ "$(uci -q get "multilogin.$section")" != "instance" ]; then
+		emit_instance_error not_found 'instance not found'
+		return 1
+	fi
 
-    load_instance_config "$section"
+	load_instance_config "$section" "$action"
 
-    if [ -z "$INSTANCE_INTERFACE" ] || [ -z "$INSTANCE_USERNAME" ] || [ -z "$INSTANCE_PASSWORD" ]; then
-        printf '{"error":"instance config incomplete"}\n'
-        return 1
-    fi
+	if [ -z "$INSTANCE_INTERFACE" ]; then
+		emit_instance_error invalid_state 'instance config incomplete'
+		return 1
+	fi
 
-    return 0
+	case "$action" in
+	check) ;;
+	logout)
+		if [ -z "$INSTANCE_ACCOUNT_REF" ] || [ -z "$INSTANCE_USERNAME" ]; then
+			emit_instance_error invalid_state 'instance config incomplete'
+			return 1
+		fi
+		;;
+	test)
+		if [ -z "$INSTANCE_ACCOUNT_REF" ] || [ -z "$INSTANCE_USERNAME" ] || [ -z "$INSTANCE_PASSWORD" ]; then
+			emit_instance_error invalid_state 'instance config incomplete'
+			return 1
+		fi
+		;;
+	*)
+		emit_instance_error invalid_request 'invalid action'
+		return 1
+		;;
+	esac
+
+	return 0
 }
 
+ACTION_TEMP_BASE=''
+ACTION_TEMP_DIR=''
+
+cleanup_action_temp() {
+	INSTANCE_PASSWORD=''
+	if [ -n "$ACTION_TEMP_DIR" ]; then
+		case "$ACTION_TEMP_DIR" in
+		"$ACTION_TEMP_BASE"/multilogin-rpc.*)
+			if [ "$ACTION_TEMP_BASE" != / ] && [ -d "$ACTION_TEMP_DIR" ] && [ ! -L "$ACTION_TEMP_DIR" ]; then
+				rm -rf "$ACTION_TEMP_DIR" >/dev/null 2>&1 || :
+			fi
+			;;
+		esac
+	fi
+	ACTION_TEMP_DIR=''
+}
+
+# shellcheck disable=SC2317
+on_action_signal() {
+	INSTANCE_PASSWORD=''
+	cleanup_action_temp
+	exit 3
+}
+
+prepare_action_temp() {
+	if [ "${MULTILOGIN_TEST_MODE:-0}" = 1 ]; then
+		ACTION_TEMP_BASE=${TMPDIR:-/tmp}
+	else
+		ACTION_TEMP_BASE=/tmp
+	fi
+	case "$ACTION_TEMP_BASE" in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	[ "$ACTION_TEMP_BASE" != / ] || return 1
+	[ -d "$ACTION_TEMP_BASE" ] && [ ! -L "$ACTION_TEMP_BASE" ] || return 1
+	ACTION_TEMP_BASE=$(cd "$ACTION_TEMP_BASE" 2>/dev/null && pwd -P) || return 1
+	[ "$ACTION_TEMP_BASE" != / ] || return 1
+
+	ACTION_TEMP_DIR=$(mktemp -d "$ACTION_TEMP_BASE/multilogin-rpc.XXXXXX" 2>/dev/null) || return 1
+	case "$ACTION_TEMP_DIR" in
+	"$ACTION_TEMP_BASE"/multilogin-rpc.*) ;;
+	*)
+		ACTION_TEMP_DIR=''
+		return 1
+		;;
+	esac
+	[ -d "$ACTION_TEMP_DIR" ] && [ ! -L "$ACTION_TEMP_DIR" ] || return 1
+	chmod 0700 "$ACTION_TEMP_DIR" 2>/dev/null || return 1
+	return 0
+}
+
+portal_script_path() {
+	PORTAL_SCRIPT='/etc/multilogin/cqu-portal.sh'
+	if [ "${MULTILOGIN_TEST_MODE:-0}" = 1 ]; then
+		[ -n "${MULTILOGIN_TEST_PORTAL_PATH:-}" ] || return 1
+		case "$MULTILOGIN_TEST_PORTAL_PATH" in
+		/*)
+			if [ -f "$MULTILOGIN_TEST_PORTAL_PATH" ] && [ ! -L "$MULTILOGIN_TEST_PORTAL_PATH" ] && [ -x "$MULTILOGIN_TEST_PORTAL_PATH" ]; then
+				PORTAL_SCRIPT=$MULTILOGIN_TEST_PORTAL_PATH
+			else
+				return 1
+			fi
+			;;
+		*) return 1 ;;
+		esac
+	fi
+	return 0
+}
+
+valid_portal_outcome() {
+	local action="$1"
+	local outcome="$2"
+	local code="$3"
+	local ok="$4"
+	local error_kind="$5"
+
+	case "$outcome" in
+	argument_error) [ "$code" -eq 4 ] && [ "$ok" = false ] && [ "$error_kind" = arguments ] ;;
+	dependency_error) [ "$code" -eq 5 ] && [ "$ok" = false ] && [ "$error_kind" = dependency ] ;;
+	interface_error) [ "$code" -eq 6 ] && [ "$ok" = false ] && [ "$error_kind" = interface ] ;;
+	encoding_error) [ "$code" -eq 7 ] && [ "$ok" = false ] && [ "$error_kind" = encoding ] ;;
+	internal_error) [ "$code" -eq 3 ] && [ "$ok" = false ] && [ "$error_kind" = internal ] ;;
+	online) [ "$action" = check ] && [ "$code" -eq 0 ] && [ "$ok" = true ] && [ -z "$error_kind" ] ;;
+	offline) [ "$action" = check ] && [ "$code" -eq 1 ] && [ "$ok" = true ] && [ -z "$error_kind" ] ;;
+	login_success) [ "$action" = test ] && [ "$code" -eq 0 ] && [ "$ok" = true ] && [ -z "$error_kind" ] ;;
+	already_online) [ "$action" = test ] && [ "$code" -eq 2 ] && [ "$ok" = true ] && [ -z "$error_kind" ] ;;
+	auth_rejected) [ "$action" = test ] && [ "$code" -eq 1 ] && [ "$ok" = false ] && [ "$error_kind" = auth ] ;;
+	classification_mismatch) [ "$action" = test ] && [ "$code" -eq 8 ] && [ "$ok" = false ] && [ "$error_kind" = classification ] ;;
+	already_offline | logout_success) [ "$action" = logout ] && [ "$code" -eq 0 ] && [ "$ok" = true ] && [ -z "$error_kind" ] ;;
+	logout_timeout) [ "$action" = logout ] && [ "$code" -eq 9 ] && [ "$ok" = false ] && [ "$error_kind" = timeout ] ;;
+	transport_error)
+		case "$action" in check | test | logout) [ "$code" -eq 3 ] && [ "$ok" = false ] && [ "$error_kind" = transport ] ;; *) return 1 ;; esac
+		;;
+	protocol_error)
+		case "$action" in check | test | logout) [ "$code" -eq 3 ] && [ "$ok" = false ] && [ "$error_kind" = protocol ] ;; *) return 1 ;; esac
+		;;
+	*) return 1 ;;
+	esac
+}
+
+validate_portal_result() {
+	local rpc_action="$1"
+	local expected_portal_action="$2"
+	local code="$3"
+	local result_file="$4"
+	local line_count portal_action portal_ok portal_outcome portal_error_kind portal_api portal_version portal_data
+
+	line_count=$(wc -l <"$result_file" 2>/dev/null) || return 1
+	[ "$line_count" -eq 1 ] 2>/dev/null || return 1
+	grep -q '"error_kind"[[:space:]]*:' "$result_file" 2>/dev/null || return 1
+	portal_action=$(jsonfilter -e '@.action' <"$result_file" 2>/dev/null) || return 1
+	portal_ok=$(jsonfilter -e '@.ok' <"$result_file" 2>/dev/null) || return 1
+	portal_outcome=$(jsonfilter -e '@.outcome' <"$result_file" 2>/dev/null) || return 1
+	portal_error_kind=$(jsonfilter -e '@.error_kind' <"$result_file" 2>/dev/null) || return 1
+	portal_api=$(jsonfilter -e '@.api' <"$result_file" 2>/dev/null) || return 1
+	portal_version=$(jsonfilter -e '@.version' <"$result_file" 2>/dev/null) || return 1
+	portal_data=$(jsonfilter -e '@.data' <"$result_file" 2>/dev/null) || return 1
+
+	[ "$portal_api" = 3 ] || return 1
+	[ -n "$portal_version" ] && [ "${#portal_version}" -le 64 ] || return 1
+	[ "$portal_action" = "$expected_portal_action" ] || return 1
+	case "$portal_ok" in
+	true | 1) portal_ok=true ;;
+	false | 0) portal_ok=false ;;
+	*) return 1 ;;
+	esac
+	case "$portal_data" in
+	\{*\}) ;;
+	*) return 1 ;;
+	esac
+	valid_portal_outcome "$rpc_action" "$portal_outcome" "$code" "$portal_ok" "$portal_error_kind" || return 1
+	INSTANCE_OUTCOME=$portal_outcome
+	return 0
+}
+
+run_portal_action() {
+	local action="$1"
+	local child_action result_file status_file
+
+	INSTANCE_CODE=3
+	INSTANCE_OUTCOME=internal_error
+
+	case "$action" in
+	check) child_action=status ;;
+	test) child_action=login ;;
+	logout) child_action=logout ;;
+	*) return 1 ;;
+	esac
+	portal_script_path || {
+		INSTANCE_PASSWORD=''
+		return 1
+	}
+	prepare_action_temp || {
+		INSTANCE_PASSWORD=''
+		return 1
+	}
+	result_file="$ACTION_TEMP_DIR/result"
+	status_file="$ACTION_TEMP_DIR/status"
+	: >"$result_file" || return 1
+	: >"$status_file" || return 1
+	chmod 0600 "$result_file" "$status_file" 2>/dev/null || return 1
+
+	case "$action" in
+	check)
+		if [ -n "$INSTANCE_V6FACE" ]; then
+			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --v6face "$INSTANCE_V6FACE" >"$result_file" 2>/dev/null
+		else
+			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" >"$result_file" 2>/dev/null
+		fi
+		INSTANCE_CODE=$?
+		;;
+	test)
+		if [ -n "$INSTANCE_V6FACE" ]; then
+			printf '%s\n' "$INSTANCE_PASSWORD" | {
+				"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --v6face "$INSTANCE_V6FACE" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
+				printf '%s\n' "$?" >"$status_file"
+			}
+		else
+			printf '%s\n' "$INSTANCE_PASSWORD" | {
+				"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
+				printf '%s\n' "$?" >"$status_file"
+			}
+		fi
+		INSTANCE_PASSWORD=''
+		INSTANCE_CODE=$(cat "$status_file" 2>/dev/null) || INSTANCE_CODE=''
+		;;
+	logout)
+		if [ -n "$INSTANCE_V6FACE" ]; then
+			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --v6face "$INSTANCE_V6FACE" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
+		else
+			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
+		fi
+		INSTANCE_CODE=$?
+		;;
+	esac
+
+	case "$INSTANCE_CODE" in
+	'' | *[!0-9]*) INSTANCE_CODE=3 ;;
+	esac
+	if ! validate_portal_result "$action" "$child_action" "$INSTANCE_CODE" "$result_file"; then
+		INSTANCE_CODE=3
+		INSTANCE_OUTCOME=internal_error
+	fi
+	cleanup_action_temp
+	return 0
+}
+
+trap cleanup_action_temp EXIT
+trap on_action_signal HUP INT TERM
+
 case "$1" in
-    list)
-        printf '{"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""}}\n'
-        ;;
-    call)
-        case "$2" in
-            quick_setup)
-                # Read JSON params from stdin: {"base_iface":"eth0","count":3}
-                json=$(cat)
-                BASE_IF=$(echo "$json" | jsonfilter -e '@.base_iface' 2>/dev/null)
-                COUNT=$(echo "$json" | jsonfilter -e '@.count' 2>/dev/null)
+list)
+	printf '{"get_overview":{},"get_settings":{},"save_settings":{"enabled":"","log_level":"","retry_interval":0,"check_interval":0,"max_retry_delay":0,"already_logged_delay":0},"list_accounts":{},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""},"list_instances":{},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"service_status":{},"service_action":{"action":""},"get_diagnostics":{},"get_logs":{},"clear_logs":{},"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"network_recover":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"script_info":{},"script_check":{},"script_stage":{"expected_generation":0},"script_validate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_execute":false},"script_activate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_activate":false,"allow_downgrade":false},"script_rollback":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_restore":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_get_draft":{},"script_save_draft":{"content":"","base_sha256":"","expected_generation":0},"script_discard_draft":{"expected_sha256":"","expected_generation":0}}\n'
+	;;
+call)
+	case "$2" in
+	get_overview | get_settings | save_settings | list_accounts | save_account | delete_account | list_instances | save_instance | delete_instance | service_status | service_action | get_diagnostics | get_logs | clear_logs | quick_setup | list_auto | remove_auto | network_recover)
+		exec /usr/libexec/multilogin-config rpc "$2"
+		;;
+	script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_save_draft | script_discard_draft)
+		exec /usr/libexec/multilogin-script rpc "$2"
+		;;
+	check_instance)
+		parse_action_section || {
+			emit_instance_error invalid_request 'invalid request'
+			exit 1
+		}
 
-                if [ -z "$BASE_IF" ] || [ -z "$COUNT" ] || [ "$COUNT" -lt 1 ] 2>/dev/null; then
-                    printf '{"error":"invalid parameters: base_iface and count are required"}\n'
-                    exit 1
-                fi
+		validate_instance_for_action "$SECTION" check || exit 1
+		if ! run_portal_action check; then
+			INSTANCE_CODE=3
+			INSTANCE_OUTCOME=internal_error
+		fi
 
-                # --- Cleanup old auto_ entries ---
-                # Remove auto_ network interfaces and devices
-                for section in $(uci show network | grep -oE '^network\.[^.]+' | sort -u); do
-                    name="${section#network.}"
-                    case "$name" in auto_*) uci -q delete "network.$name" ;; esac
-                done
+		emit_instance_result "check" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_UA_TYPE" "$INSTANCE_CODE" "$INSTANCE_OUTCOME" "$INSTANCE_OUTCOME"
+		;;
 
-                # Remove auto_ sections from mwan3
-                for section in $(uci show mwan3 | grep -oE '^mwan3\.[^.]+' | sort -u); do
-                    name="${section#mwan3.}"
-                    case "$name" in auto_*) uci -q delete "mwan3.$name" ;; esac
-                done
+	test_instance)
+		parse_action_section || {
+			emit_instance_error invalid_request 'invalid request'
+			exit 1
+		}
 
-                # Find wan zone and remove old auto_ entries from it
-                WAN_ZONE=""
-                for z in $(uci show firewall | grep "=zone" | grep -oE "firewall\.[^=]+=zone" | awk -F= '{print $1}' | awk -F. '{print $2}'); do
-                    if [ "$(uci -q get "firewall.$z.name")" = "wan" ]; then
-                        WAN_ZONE="$z"
-                        break
-                    fi
-                done
+		validate_instance_for_action "$SECTION" test || exit 1
+		if ! run_portal_action test; then
+			INSTANCE_CODE=3
+			INSTANCE_OUTCOME=internal_error
+		fi
 
-                if [ -n "$WAN_ZONE" ]; then
-                    idx=0
-                    while true; do
-                        val=$(uci -q get "firewall.$WAN_ZONE.network" 2>/dev/null | awk -v i=$((idx+1)) 'NR==i')
-                        [ -z "$val" ] && break
-                        case "$val" in
-                            auto_*) uci -q del_list "firewall.$WAN_ZONE.network=$val" ;;
-                        esac
-                        idx=$((idx+1))
-                    done
-                    # More robust cleanup using the list form
-                    for net in $(uci -q get "firewall.$WAN_ZONE.network"); do
-                        case "$net" in auto_*) uci del_list "firewall.$WAN_ZONE.network=$net" ;; esac
-                    done
-                fi
+		emit_instance_result "test" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_UA_TYPE" "$INSTANCE_CODE" "$INSTANCE_OUTCOME" "$INSTANCE_OUTCOME"
+		;;
 
-                # Cleanup auto_ members from balanced policy
-                for mem in $(uci -q get mwan3.balanced.use_member 2>/dev/null); do
-                    case "$mem" in auto_*) uci del_list "mwan3.balanced.use_member=$mem" ;; esac
-                done
+	logout_instance)
+		parse_action_section || {
+			emit_instance_error invalid_request 'invalid request'
+			exit 1
+		}
 
-                # --- Create new configs ---
-                i=1
-                while [ "$i" -le "$COUNT" ]; do
-                    MACVLAN_DEV="auto_${BASE_IF}_${i}"
-                    LOGICAL_IF="auto_vwan_${i}"
-                    MWAN_MEMBER="auto_vwan_${i}_m1_w5"
-                    METRIC=$((10 + i))
+		validate_instance_for_action "$SECTION" logout || exit 1
+		if ! run_portal_action logout; then
+			INSTANCE_CODE=3
+			INSTANCE_OUTCOME=internal_error
+		fi
 
-                    # Network: macvlan device
-                    uci set "network.$MACVLAN_DEV=device"
-                    uci set "network.$MACVLAN_DEV.type=macvlan"
-                    uci set "network.$MACVLAN_DEV.ifname=$BASE_IF"
-                    uci set "network.$MACVLAN_DEV.name=$MACVLAN_DEV"
-                    uci set "network.$MACVLAN_DEV.mode=private"
-                    uci set "network.$MACVLAN_DEV.ipv6=0"
+		emit_instance_result "logout" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_UA_TYPE" "$INSTANCE_CODE" "$INSTANCE_OUTCOME" "$INSTANCE_OUTCOME"
+		;;
 
-                    # Network: logical DHCP interface
-                    uci set "network.$LOGICAL_IF=interface"
-                    uci set "network.$LOGICAL_IF.proto=dhcp"
-                    uci set "network.$LOGICAL_IF.device=$MACVLAN_DEV"
-                    uci set "network.$LOGICAL_IF.metric=$METRIC"
-
-                    # Firewall: add to wan zone
-                    if [ -n "$WAN_ZONE" ]; then
-                        uci add_list "firewall.$WAN_ZONE.network=$LOGICAL_IF"
-                    fi
-
-                    # mwan3: tracking interface
-                    uci set "mwan3.$LOGICAL_IF=interface"
-                    uci set "mwan3.$LOGICAL_IF.enabled=1"
-                    uci set "mwan3.$LOGICAL_IF.family=ipv4"
-                    uci set "mwan3.$LOGICAL_IF.initial_state=offline"
-                    uci set "mwan3.$LOGICAL_IF.track_method=ping"
-                    uci set "mwan3.$LOGICAL_IF.reliability=1"
-                    uci set "mwan3.$LOGICAL_IF.count=1"
-                    uci set "mwan3.$LOGICAL_IF.size=56"
-                    uci set "mwan3.$LOGICAL_IF.max_ttl=60"
-                    uci set "mwan3.$LOGICAL_IF.timeout=2"
-                    uci set "mwan3.$LOGICAL_IF.interval=5"
-                    uci set "mwan3.$LOGICAL_IF.failure_interval=5"
-                    uci set "mwan3.$LOGICAL_IF.recovery_interval=5"
-                    uci set "mwan3.$LOGICAL_IF.down=2"
-                    uci set "mwan3.$LOGICAL_IF.up=3"
-                    uci add_list "mwan3.$LOGICAL_IF.track_ip=223.5.5.5"
-                    uci add_list "mwan3.$LOGICAL_IF.track_ip=114.114.114.114"
-
-                    # mwan3: member
-                    uci set "mwan3.$MWAN_MEMBER=member"
-                    uci set "mwan3.$MWAN_MEMBER.interface=$LOGICAL_IF"
-                    uci set "mwan3.$MWAN_MEMBER.metric=1"
-                    uci set "mwan3.$MWAN_MEMBER.weight=5"
-
-                    # mwan3: add member to balanced policy
-                    uci -q get mwan3.balanced >/dev/null 2>&1 || { uci set mwan3.balanced=policy; uci set mwan3.balanced.last_resort=unreachable; }
-                    uci add_list "mwan3.balanced.use_member=$MWAN_MEMBER"
-
-                    i=$((i+1))
-                done
-
-                # Commit all changes
-                uci commit network
-                uci commit firewall
-                uci commit mwan3
-
-                # Apply
-                /etc/init.d/network reload >/dev/null 2>&1 &
-                /etc/init.d/firewall reload >/dev/null 2>&1 &
-                /etc/init.d/mwan3 reload >/dev/null 2>&1 &
-
-                printf '{"result":"ok","count":%s,"base_iface":"%s"}\n' "$COUNT" "$BASE_IF"
-                ;;
-
-            list_auto)
-                # Return list of all auto_ managed sections
-                # Correct pattern: filter whole lines first, then extract section name
-                IFACES=$(uci show network | grep -E "^network\.auto_[^.=]+=interface$" | sed "s/network\.\([^.=]*\)=interface/\1/" | sort -u)
-                DEVICES=$(uci show network | grep -E "^network\.auto_[^.=]+=device$" | sed "s/network\.\([^.=]*\)=device/\1/" | sort -u)
-
-                # Get base_iface from first device if exists
-                FIRST_DEV=$(echo "$DEVICES" | head -n1)
-                BASE_IF=""
-                COUNT=0
-                if [ -n "$FIRST_DEV" ]; then
-                    BASE_IF=$(uci -q get "network.$FIRST_DEV.ifname" 2>/dev/null)
-                    COUNT=$(echo "$IFACES" | grep -c .)
-                fi
-
-                printf '{"base_iface":"%s","count":%s,"interfaces":[' "$BASE_IF" "$COUNT"
-                first=1
-                for iface in $IFACES; do
-                    dev=$(uci -q get "network.$iface.device" 2>/dev/null)
-                    metric=$(uci -q get "network.$iface.metric" 2>/dev/null)
-                    [ "$first" = "1" ] && first=0 || printf ','
-                    printf '{"name":"%s","device":"%s","metric":"%s"}' "$iface" "$dev" "$metric"
-                done
-                printf ']}\n'
-                ;;
-
-            remove_auto)
-                # Remove all auto_ configs
-                for section in $(uci show network | grep -oE 'network\.auto_[^.]+' | awk -F. '{print $2}' | sort -u); do
-                    uci -q delete "network.$section"
-                done
-                for section in $(uci show mwan3 2>/dev/null | grep -oE 'mwan3\.auto_[^.]+' | awk -F. '{print $2}' | sort -u); do
-                    uci -q delete "mwan3.$section"
-                done
-                # Clean WAN zone
-                for z in $(uci show firewall | grep "=zone" | grep -oE "firewall\.[^.=]+" | awk -F. '{print $2}'); do
-                    if [ "$(uci -q get "firewall.$z.name")" = "wan" ]; then
-                        for net in $(uci -q get "firewall.$z.network"); do
-                            case "$net" in auto_*) uci del_list "firewall.$z.network=$net" ;; esac
-                        done
-                        break
-                    fi
-                done
-                # Clean balanced members
-                for mem in $(uci -q get mwan3.balanced.use_member 2>/dev/null); do
-                    case "$mem" in auto_*) uci del_list "mwan3.balanced.use_member=$mem" ;; esac
-                done
-
-                uci commit network
-                uci commit firewall
-                uci commit mwan3
-
-                /etc/init.d/network reload >/dev/null 2>&1 &
-                /etc/init.d/firewall reload >/dev/null 2>&1 &
-                /etc/init.d/mwan3 reload >/dev/null 2>&1 &
-
-                printf '{"result":"ok"}\n'
-                ;;
-
-            check_instance)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-
-                validate_instance_for_action "$SECTION" || exit 1
-
-                TMP_OUT=$(mktemp /tmp/multilogin-check.XXXXXX)
-                /etc/multilogin/check_status.sh \
-                    --mwan3 "$INSTANCE_INTERFACE" \
-                    --account "$INSTANCE_USERNAME" \
-                    --password "$INSTANCE_PASSWORD" \
-                    --ua-type "$INSTANCE_UA_TYPE" \
-                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
-                CODE=$?
-                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
-                rm -f "$TMP_OUT"
-
-                emit_instance_result "check" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
-                ;;
-
-            test_instance)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-
-                validate_instance_for_action "$SECTION" || exit 1
-
-                TMP_OUT=$(mktemp /tmp/multilogin-test.XXXXXX)
-                sh /etc/multilogin/login.sh \
-                    --mwan3 "$INSTANCE_INTERFACE" \
-                    --account "$INSTANCE_USERNAME" \
-                    --password "$INSTANCE_PASSWORD" \
-                    --ua-type "$INSTANCE_UA_TYPE" \
-                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
-                CODE=$?
-                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
-                rm -f "$TMP_OUT"
-
-                emit_instance_result "test" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
-                ;;
-
-            logout_instance)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-
-                validate_instance_for_action "$SECTION" || exit 1
-
-                TMP_OUT=$(mktemp /tmp/multilogin-logout.XXXXXX)
-                sh /etc/multilogin/logout.sh \
-                    --mwan3 "$INSTANCE_INTERFACE" \
-                    --account "$INSTANCE_USERNAME" \
-                    --password "$INSTANCE_PASSWORD" \
-                    --ua-type "$INSTANCE_UA_TYPE" \
-                    --v6face "$INSTANCE_V6FACE" >"$TMP_OUT" 2>&1
-                CODE=$?
-                OUTPUT=$(cat "$TMP_OUT" 2>/dev/null)
-                rm -f "$TMP_OUT"
-
-                emit_instance_result "logout" "$SECTION" "$INSTANCE_ALIAS" "$INSTANCE_INTERFACE" "$INSTANCE_V6FACE" "$INSTANCE_ACCOUNT_REF" "$INSTANCE_USERNAME" "$INSTANCE_UA_TYPE" "$CODE" "$OUTPUT"
-                ;;
-
-            save_instance)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-                ENABLED=$(echo "$json" | jsonfilter -e '@.enabled' 2>/dev/null)
-                ALIAS_NAME=$(echo "$json" | jsonfilter -e '@.alias' 2>/dev/null)
-                INTERFACE=$(echo "$json" | jsonfilter -e '@.interface' 2>/dev/null)
-                V6FACE=$(echo "$json" | jsonfilter -e '@.v6face' 2>/dev/null)
-                ACCOUNT=$(echo "$json" | jsonfilter -e '@.account' 2>/dev/null)
-                UA_TYPE=$(echo "$json" | jsonfilter -e '@.ua_type' 2>/dev/null)
-
-                [ -n "$ENABLED" ] || ENABLED="0"
-                [ -n "$UA_TYPE" ] || UA_TYPE="pc"
-
-                if [ -z "$INTERFACE" ] || [ -z "$ACCOUNT" ]; then
-                    printf '{"error":"interface and account are required"}\n'
-                    exit 1
-                fi
-
-                if [ -n "$SECTION" ] && [ "$(uci -q get "multilogin.$SECTION")" != "instance" ]; then
-                    printf '{"error":"instance not found"}\n'
-                    exit 1
-                fi
-
-                if [ -z "$SECTION" ]; then
-                    SECTION=$(uci add multilogin instance)
-                fi
-
-                uci set "multilogin.$SECTION=instance"
-                uci set "multilogin.$SECTION.enabled=$ENABLED"
-                uci set "multilogin.$SECTION.alias=$ALIAS_NAME"
-                uci set "multilogin.$SECTION.interface=$INTERFACE"
-                uci set "multilogin.$SECTION.account=$ACCOUNT"
-                uci set "multilogin.$SECTION.ua_type=$UA_TYPE"
-                if [ -n "$V6FACE" ]; then
-                    uci set "multilogin.$SECTION.v6face=$V6FACE"
-                else
-                    uci -q delete "multilogin.$SECTION.v6face"
-                fi
-
-                uci commit multilogin
-                /etc/init.d/multilogin restart >/dev/null 2>&1 &
-
-                printf '{"result":"ok","section":"%s"}\n' "$SECTION"
-                ;;
-
-            save_account)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-                ALIAS_NAME=$(echo "$json" | jsonfilter -e '@.alias' 2>/dev/null)
-                USERNAME=$(echo "$json" | jsonfilter -e '@.username' 2>/dev/null)
-                PASSWORD=$(echo "$json" | jsonfilter -e '@.password' 2>/dev/null)
-
-                if [ -z "$USERNAME" ]; then
-                    printf '{"error":"username is required"}\n'
-                    exit 1
-                fi
-
-                if [ -n "$SECTION" ] && [ "$(uci -q get "multilogin.$SECTION")" != "account" ]; then
-                    printf '{"error":"account not found"}\n'
-                    exit 1
-                fi
-
-                if [ -z "$SECTION" ]; then
-                    SECTION=$(uci add multilogin account)
-                fi
-
-                if [ -z "$PASSWORD" ] && [ "$(uci -q get "multilogin.$SECTION.password")" = "" ]; then
-                    printf '{"error":"password is required"}\n'
-                    exit 1
-                fi
-
-                uci set "multilogin.$SECTION.alias=$ALIAS_NAME"
-                uci set "multilogin.$SECTION.username=$USERNAME"
-                if [ -n "$PASSWORD" ]; then
-                    uci set "multilogin.$SECTION.password=$PASSWORD"
-                fi
-                uci commit multilogin
-
-                printf '{"result":"ok","section":"%s"}\n' "$SECTION"
-                ;;
-
-            delete_account)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-
-                if [ -z "$SECTION" ]; then
-                    printf '{"error":"missing section"}\n'
-                    exit 1
-                fi
-
-                if [ "$(uci -q get "multilogin.$SECTION")" != "account" ]; then
-                    printf '{"error":"account not found"}\n'
-                    exit 1
-                fi
-
-                uci delete "multilogin.$SECTION"
-                uci commit multilogin
-
-                printf '{"result":"ok"}\n'
-                ;;
-
-            delete_instance)
-                json=$(cat)
-                SECTION=$(echo "$json" | jsonfilter -e '@.section' 2>/dev/null)
-
-                if [ -z "$SECTION" ]; then
-                    printf '{"error":"missing section"}\n'
-                    exit 1
-                fi
-
-                if [ "$(uci -q get "multilogin.$SECTION")" != "instance" ]; then
-                    printf '{"error":"instance not found"}\n'
-                    exit 1
-                fi
-
-                uci -q delete "multilogin.$SECTION"
-                uci commit multilogin
-                /etc/init.d/multilogin restart >/dev/null 2>&1 &
-
-                printf '{"result":"ok"}\n'
-                ;;
-
-            *)
-                printf '{"error":"unknown method"}\n'
-                exit 1
-                ;;
-        esac
-        ;;
-    *)
-        printf '{"error":"unsupported action"}\n'
-        exit 1
-        ;;
+	*)
+		printf '{"error":"unknown method"}\n'
+		exit 1
+		;;
+	esac
+	;;
+*)
+	printf '{"error":"unsupported action"}\n'
+	exit 1
+	;;
 esac
