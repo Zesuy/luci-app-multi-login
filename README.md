@@ -55,7 +55,11 @@ flowchart TD
 make package/luci-app-multilogin/compile V=s
 ```
 
-生成的 IPK 位于 SDK 的 `bin/packages/` 树中。安装、升级、网络变更、门户认证、脚本执行和设备重启均应遵循发布/运维流程；它们不属于主机侧自动化测试。
+OpenWrt 23.05/24.10 生成 IPK，25.12 生成 APK，制品均位于 SDK 的
+`bin/packages/` 树中。普通 CI 只运行代码、静态与纯逻辑检查；手动触发的
+Release validation workflow 会额外编译并只读检查两种 IPK 和一种 APK。
+安装、升级、网络变更、门户认证、脚本执行和设备重启均应遵循发布/运维流程；
+它们不属于主机侧自动化测试，也不使用 QEMU 代替真实设备验收。
 
 ## 支持与诊断
 

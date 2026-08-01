@@ -1,10 +1,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
-# Keep the SemVer prerelease in PKG_VERSION and use release 1 for the first
-# build of this candidate. OpenWrt 23.05 encodes it as 3.0.0-rc.1-1, while
-# OpenWrt 24.10 encodes the same release value as 3.0.0-rc.1-r1.
-PKG_VERSION:=3.0.0-rc.1
+# Keep the release/tag SemVer separate from APK's Alpine version spelling.
+# IPK accepts 3.0.0-rc.1; APK v3 requires the equivalent 3.0.0_rc1.
+PKG_SOURCE_VERSION:=3.0.0-rc.1
+PKG_APK_VERSION:=3.0.0_rc1
+ifeq ($(CONFIG_USE_APK),y)
+PKG_VERSION:=$(PKG_APK_VERSION)
+else
+PKG_VERSION:=$(PKG_SOURCE_VERSION)
+endif
 PKG_RELEASE:=1
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
@@ -69,29 +74,29 @@ endef
 define Package/luci-app-multilogin/preinst
 #!/bin/sh
 ML_MIGRATION_EMBEDDED=1
-$$(file <$(CURDIR)/package/multilogin-migrate.sh)
-$$(file <$(CURDIR)/package/hooks/preinst.sh)
+$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$(file <$(CURDIR)/package/hooks/preinst.sh)
 endef
 
 define Package/luci-app-multilogin/postinst
 #!/bin/sh
 ML_MIGRATION_EMBEDDED=1
-$$(file <$(CURDIR)/package/multilogin-migrate.sh)
-$$(file <$(CURDIR)/package/hooks/postinst.sh)
+$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$(file <$(CURDIR)/package/hooks/postinst.sh)
 endef
 
 define Package/luci-app-multilogin/prerm
 #!/bin/sh
 ML_MIGRATION_EMBEDDED=1
-$$(file <$(CURDIR)/package/multilogin-migrate.sh)
-$$(file <$(CURDIR)/package/hooks/prerm.sh)
+$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$(file <$(CURDIR)/package/hooks/prerm.sh)
 endef
 
 define Package/luci-app-multilogin/postrm
 #!/bin/sh
 ML_MIGRATION_EMBEDDED=1
-$$(file <$(CURDIR)/package/multilogin-migrate.sh)
-$$(file <$(CURDIR)/package/hooks/postrm.sh)
+$(file <$(CURDIR)/package/multilogin-migrate.sh)
+$(file <$(CURDIR)/package/hooks/postrm.sh)
 endef
 
 $(eval $(call BuildPackage,luci-app-multilogin))

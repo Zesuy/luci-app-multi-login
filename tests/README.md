@@ -39,6 +39,9 @@ rpcd, UCI, services, network commands, browsers, or a router filesystem.
 
 Phase 8 adds pinned-workflow and release-metadata checks, a pure change-scope
 matrix, and a shell-only gate that requires a newer SemVer without changing
-script API 3. Read-only prepared IPK fixtures enforce the exact dependency and
-payload manifests, file modes, release-line filename, and checksum, including
-negative extra-file/dependency cases; they are never installed or executed.
+script API 3. Ordinary CI does not compile packages; the separate manual release
+validation workflow compiles 23.05/24.10 IPKs and a 25.12 APK after the same
+code gate passes. Read-only prepared IPK/APK fixtures enforce exact dependency
+and payload manifests, file modes, release-line filenames, checksums, and APK
+lifecycle-script embedding, including negative extra-file/dependency cases.
+They are never installed or executed, and no QEMU/router behavior is emulated.

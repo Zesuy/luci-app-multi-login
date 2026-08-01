@@ -67,8 +67,9 @@ function packageTextTests() {
   for (const hook of ['preinst', 'postinst', 'prerm', 'postrm']) {
     const block = makefile.match(new RegExp(`define Package/luci-app-multilogin/${hook}([\\s\\S]*?)endef`))?.[1] ?? '';
     assert.match(block, /ML_MIGRATION_EMBEDDED=1/);
-    assert.ok(block.includes('$$(file <$(CURDIR)/package/multilogin-migrate.sh)'), `${hook} does not embed migration logic`);
-    assert.ok(block.includes(`$$(file <$(CURDIR)/package/hooks/${hook}.sh)`), `${hook} does not embed its dispatcher`);
+    assert.ok(block.includes('$(file <$(CURDIR)/package/multilogin-migrate.sh)'), `${hook} does not embed migration logic`);
+    assert.ok(block.includes(`$(file <$(CURDIR)/package/hooks/${hook}.sh)`), `${hook} does not embed its dispatcher`);
+    assert.doesNotMatch(block, /\$\$\(file/, `${hook} uses an APK-incompatible deferred file expression`);
   }
   pass('Makefile ownership, conffile, factory, wrapper, and hook embedding text');
 }

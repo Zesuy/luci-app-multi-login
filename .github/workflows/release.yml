@@ -8,8 +8,8 @@ on:
         required: true
         default: v3.0.0-rc.1
         type: string
-      artifact_run_id:
-        description: Successful SDK workflow run ID for this exact commit
+      release_check_run_id:
+        description: Successful manual release validation run ID for this exact commit
         required: true
         type: string
       base_ref:
@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify candidate and SDK artifacts
+    name: Verify candidate and release-validation artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -49,43 +49,48 @@ jobs:
         run: test "$CONFIRM_RELEASE" = CREATE_DRAFT
 
       - name: Verify source release matrix
-        run: node tools/release/version-matrix.mjs --tag '${{ inputs.tag }}'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: node tools/release/version-matrix.mjs --tag "$RELEASE_TAG"
 
       - name: Require the full package release gate
         env:
           BASE_REF: ${{ inputs.base_ref }}
         run: |
-          git diff --name-only "$BASE_REF" "$GITHUB_SHA" > changed-paths.txt
+          BASE_SHA=$(git rev-parse --verify --end-of-options "$BASE_REF^{commit}")
+          git diff --name-only "$BASE_SHA" "$GITHUB_SHA" >changed-paths.txt
           node tools/release/change-scope.mjs --paths-file changed-paths.txt --require package
 
-      - name: Verify SDK workflow provenance
+      - name: Verify release validation workflow provenance
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.artifact_run_id }}
+          RUN_ID: ${{ inputs.release_check_run_id }}
           EXPECTED_SHA: ${{ github.sha }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .conclusion)" = success
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_sha)" = "$EXPECTED_SHA"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .path)" = .github/workflows/ci.yml
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .event)" = push
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .path)" = .github/workflows/release-check.yml
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .event)" = workflow_dispatch
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_repository.full_name)" = "$EXPECTED_REPOSITORY"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_branch)" = "$EXPECTED_BRANCH"
 
       - name: Download verified SDK artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          run-id: ${{ inputs.artifact_run_id }}
+          run-id: ${{ inputs.release_check_run_id }}
           github-token: ${{ github.token }}
           path: release-artifacts
 
-      - name: Inspect IPK metadata and checksums
+      - name: Inspect package metadata and checksums
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           find release-artifacts -type f -name 'luci-app-multilogin_*.ipk' -print | LC_ALL=C sort > ipks.txt
+          find release-artifacts -type f -name 'luci-app-multilogin-*.apk' -print | LC_ALL=C sort > apks.txt
           test "$(wc -l < ipks.txt)" -eq 2
+          test "$(wc -l < apks.txt)" -eq 1
           while IFS= read -r ipk; do
             checksums="$(dirname "$ipk")/sha256sums.txt"
             test -f "$checksums"
@@ -99,18 +104,32 @@ jobs:
             basename "$ipk" >> ipk-names.txt
           done < ipks.txt
           test "$(sort -u ipk-names.txt | wc -l)" -eq 2
+          apk=$(cat apks.txt)
+          checksums="$(dirname "$apk")/sha256sums.txt"
+          apk_tool="$(dirname "$apk")/apk-tool"
+          test -f "$checksums"
+          test -x "$apk_tool"
+          case "$apk" in
+            *openwrt-25.12.*) release_style=r ;;
+            *) echo "unknown SDK artifact path: $apk" >&2; exit 1 ;;
+          esac
+          sh tools/release/inspect-artifact.sh --apk "$apk" --apk-tool "$apk_tool" \
+            --checksums "$checksums" --tag "$RELEASE_TAG" --release-style "$release_style"
 
       - name: Create release notes
-        run: node tools/release/release-notes.mjs --version '${{ inputs.tag }}' --output release-notes.md
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: node tools/release/release-notes.mjs --version "$RELEASE_TAG" --output release-notes.md
 
       - name: Assemble verified release bundle
         run: |
           mkdir release-bundle
           cp release-notes.md release-bundle/
           while IFS= read -r ipk; do cp "$ipk" release-bundle/; done < ipks.txt
+          while IFS= read -r apk; do cp "$apk" release-bundle/; done < apks.txt
           (
             cd release-bundle
-            sha256sum luci-app-multilogin_*.ipk > sha256sums.txt
+            sha256sum luci-app-multilogin_*.ipk luci-app-multilogin-*.apk > sha256sums.txt
           )
 
       - name: Upload verified release bundle
@@ -152,7 +171,7 @@ jobs:
             echo "release tag already exists: $RELEASE_TAG" >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" release-bundle/luci-app-multilogin_*.ipk release-bundle/sha256sums.txt \
+          gh release create "$RELEASE_TAG" release-bundle/luci-app-multilogin_*.ipk release-bundle/luci-app-multilogin-*.apk release-bundle/sha256sums.txt \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TAG" \
             --notes-file release-bundle/release-notes.md \

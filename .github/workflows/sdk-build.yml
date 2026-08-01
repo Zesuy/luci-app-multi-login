@@ -31,6 +31,10 @@ on:
         description: OpenWrt package release marker style (plain or r).
         required: true
         type: string
+      package_format:
+        description: Package archive format to build and inspect (ipk or apk).
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -111,7 +115,7 @@ jobs:
         run: |
           set -eu
           case "$FEED_BRANCH" in
-            openwrt-23.05 | openwrt-24.10) ;;
+            openwrt-23.05 | openwrt-24.10 | openwrt-25.12) ;;
             *) echo 'unsupported OpenWrt feed branch' >&2; exit 1 ;;
           esac
           sed -i \
@@ -132,15 +136,23 @@ jobs:
           timeout 120s make defconfig
           timeout 900s make package/luci-app-multilogin/compile V=s
 
-      - name: Stage IPK build output and checksum
+      - name: Stage package build output and checksum
         id: artifact
         env:
+          PACKAGE_FORMAT: ${{ inputs.package_format }}
           RELEASE_STYLE: ${{ inputs.release_style }}
         working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
         run: |
           set -eu
-          case "$RELEASE_STYLE" in plain | r) ;; *) exit 1 ;; esac
-          set -- $(find bin/packages -type f -name 'luci-app-multilogin_*.ipk' -print | LC_ALL=C sort)
+          case "$PACKAGE_FORMAT:$RELEASE_STYLE" in
+            ipk:plain | ipk:r | apk:r) ;;
+            *) echo 'unsupported package format or release style' >&2; exit 1 ;;
+          esac
+          case "$PACKAGE_FORMAT" in
+            ipk) PACKAGE_GLOB='luci-app-multilogin_*.ipk' ;;
+            apk) PACKAGE_GLOB='luci-app-multilogin-*.apk' ;;
+          esac
+          set -- $(find bin/packages -type f -name "$PACKAGE_GLOB" -print | LC_ALL=C sort)
           test "$#" -eq 1
           mkdir artifact
           cp "$1" artifact/
@@ -148,15 +160,30 @@ jobs:
             cd artifact
             sha256sum "$(basename "$1")" >sha256sums.txt
           )
-          RELEASE_TAG="v$(sed -n 's/^PKG_VERSION:=//p' "$GITHUB_WORKSPACE/Makefile")"
-          sh "$GITHUB_WORKSPACE/tools/release/inspect-artifact.sh" \
-            --ipk "$PWD/artifact/$(basename "$1")" \
-            --checksums "$PWD/artifact/sha256sums.txt" \
-            --tag "$RELEASE_TAG" \
-            --release-style "$RELEASE_STYLE"
+          RELEASE_TAG="v$(sed -n 's/^PKG_SOURCE_VERSION:=//p' "$GITHUB_WORKSPACE/Makefile")"
+          case "$PACKAGE_FORMAT" in
+            ipk)
+              sh "$GITHUB_WORKSPACE/tools/release/inspect-artifact.sh" \
+                --ipk "$PWD/artifact/$(basename "$1")" \
+                --checksums "$PWD/artifact/sha256sums.txt" \
+                --tag "$RELEASE_TAG" \
+                --release-style "$RELEASE_STYLE"
+              ;;
+            apk)
+              APK_TOOL="$PWD/staging_dir/host/bin/apk"
+              test -x "$APK_TOOL"
+              cp "$APK_TOOL" artifact/apk-tool
+              sh "$GITHUB_WORKSPACE/tools/release/inspect-artifact.sh" \
+                --apk "$PWD/artifact/$(basename "$1")" \
+                --apk-tool "$PWD/artifact/apk-tool" \
+                --checksums "$PWD/artifact/sha256sums.txt" \
+                --tag "$RELEASE_TAG" \
+                --release-style "$RELEASE_STYLE"
+              ;;
+          esac
           printf 'artifact_path=%s\n' "$PWD/artifact" >>"$GITHUB_OUTPUT"
 
-      - name: Upload IPK build output
+      - name: Upload package build output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ inputs.artifact_name }}

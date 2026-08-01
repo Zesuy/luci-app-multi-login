@@ -56,27 +56,39 @@ if (!tag.startsWith('v') || !semver.test(tag.slice(1))) {
 const version = tag.slice(1);
 const makefile = sourceFile('Makefile');
 const portal = sourceFile('etc/multilogin/cqu-portal.sh');
-const packageVersion = assignment(makefile, 'PKG_VERSION', 'Makefile');
+// Source SemVer and APK's deterministic projection are distinct by design.
+// Keep compatibility with the short-lived pre-APK metadata fixture.
+const sourceVersion = /^PKG_SOURCE_VERSION:=/m.test(makefile)
+	? assignment(makefile, 'PKG_SOURCE_VERSION', 'Makefile')
+	: assignment(makefile, 'PKG_VERSION', 'Makefile');
+const apkVersion = /^PKG_APK_VERSION:=/m.test(makefile)
+	? assignment(makefile, 'PKG_APK_VERSION', 'Makefile')
+	: sourceVersion.replace(/-([0-9A-Za-z]+(?:\.[0-9A-Za-z-]+)*)$/, (_, prerelease) => `_${prerelease.replace(/[.-]/g, '')}`);
 const packageRelease = assignment(makefile, 'PKG_RELEASE', 'Makefile');
 const scriptApi = integerLiteral(portal, 'MULTILOGIN_SCRIPT_API', 'etc/multilogin/cqu-portal.sh');
 const scriptVersion = literal(portal, 'MULTILOGIN_SCRIPT_VERSION', 'etc/multilogin/cqu-portal.sh');
 
-if (packageVersion !== version) fail(`tag ${tag} disagrees with PKG_VERSION ${packageVersion}`);
+if (sourceVersion !== version) fail(`tag ${tag} disagrees with PKG_SOURCE_VERSION ${sourceVersion}`);
+const expectedApkVersion = version.replace(/-([0-9A-Za-z]+(?:\.[0-9A-Za-z-]+)*)$/, (_, prerelease) => `_${prerelease.replace(/[.-]/g, '')}`);
+if (apkVersion !== expectedApkVersion) fail(`PKG_APK_VERSION ${apkVersion} is not the deterministic APK projection ${expectedApkVersion}`);
 if (!/^[1-9]\d*$/.test(packageRelease)) fail(`PKG_RELEASE must be a positive integer, got ${packageRelease}`);
 if (scriptApi !== '3') fail(`script API must remain 3, got ${scriptApi}`);
 if (scriptVersion !== version) fail(`tag ${tag} disagrees with script version ${scriptVersion}`);
 
 const date = changelogEntry(sourceFile('CHANGELOG.md'), version);
 const packageControlVersions = {
-	plain: `${packageVersion}-${packageRelease}`,
-	r_prefixed: `${packageVersion}-r${packageRelease}`,
+	plain: `${sourceVersion}-${packageRelease}`,
+	r_prefixed: `${sourceVersion}-r${packageRelease}`,
 };
 const artifacts = Object.fromEntries(Object.entries(packageControlVersions)
 	.map(([style, controlVersion]) => [style, `luci-app-multilogin_${controlVersion}_all.ipk`]));
+artifacts.apk = `luci-app-multilogin-${apkVersion}-r${packageRelease}.apk`;
 process.stdout.write(JSON.stringify({
 	tag,
 	version,
-	package_version: packageVersion,
+	package_version: sourceVersion,
+	package_source_version: sourceVersion,
+	package_apk_version: apkVersion,
 	package_release: Number(packageRelease),
 	package_control_versions: packageControlVersions,
 	script_api: Number(scriptApi),
