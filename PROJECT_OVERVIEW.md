@@ -1,303 +1,69 @@
-# LuCI App MultiLogin - 项目总览
+# MultiLogin v3 项目总览
 
-## 项目结构
+## 架构
 
-```
-luci-app-multilogin/
-├── Makefile                           # OpenWrt 编译配置文件
-├── README.md                          # 项目说明文档
-├── controller/
-│   └── MultiLogin.lua                 # LuCI 控制器（路由和菜单注册）
-├── model/
-│   └── multilogin.lua                 # LuCI 模型（配置界面定义）
-└── etc/
-    ├── config/
-    │   └── multilogin                 # UCI 配置文件（默认配置）
-    ├── init.d/
-    │   └── multilogin                 # 系统服务初始化脚本
-    └── multilogin/
-        ├── login_control.bash         # 主控制脚本（后台守护进程）
-        └── login.sh                   # 登录执行脚本
+v3 是一个以固定 RPC 边界为中心的 OpenWrt LuCI 应用。前端、后台、控制器、门户脚本和网络事务各自拥有明确职责：
+
+```mermaid
+flowchart LR
+    LuCI[LuCI 五页面] -->|named multilogin RPC| Backend[rpcd / multilogin-config]
+    LuCI -->|script RPC only| ScriptBackend[rpcd / multilogin-script]
+    Backend --> Config[UCI: server-side credentials]
+    Backend --> Journal[owned-network state + journal]
+    ScriptBackend --> ScriptState[script state + backups]
+    Init[procd init] --> Controller[login_control.bash]
+    Controller --> Portal[cqu-portal.sh]
 ```
 
-## 文件说明
+| 部件 | 责任 | 不负责 |
+| --- | --- | --- |
+| LuCI | 呈现状态，调用固定 RPC，显示可恢复的加载/空/错误状态 | 读取 UCI、文件、日志，执行任意命令或服务操作 |
+| `multilogin-config` | 设置、账户、实例、服务动作、脱敏诊断、受管网络事务 | 任意 UCI 包、任意路径或前缀式资源清理 |
+| `multilogin-script` | 固定 Raw 更新与 Custom 草稿的状态机、验证/激活恢复 | 更新 IPK、控制器、LuCI 或任何其他文件 |
+| `login_control.bash` | 逐实例调度、退避、抖动和调用门户脚本 | 通过 argv、日志或临时路径暴露凭据 |
+| `cqu-portal.sh` | 门户状态、登录、注销、版本与离线自检 | 管理服务、网络或 LuCI |
 
-### 核心文件
+## 代码布局
 
-#### 1. **controller/MultiLogin.lua**
-- **作用**: LuCI 路由控制器
-- **功能**: 在 LuCI 界面中注册菜单项
-- **位置**: 服务 -> 多拨登录
-
-#### 2. **model/multilogin.lua**
-- **作用**: LuCI 配置模型（CBI 模型）
-- **功能**: 
-  - 全局设置管理（启用/禁用、日志级别、重试参数）
-  - 服务状态显示和控制（启动/停止/重启按钮）
-  - login.sh 脚本在线编辑器
-  - 登录实例配置（添加/删除/编辑多个实例）
-
-#### 3. **etc/multilogin/login_control.bash**
-- **作用**: 主控制守护进程
-- **功能**:
-  - 从 UCI 加载配置
-  - 定期检查 mwan3 接口状态
-  - 接口离线时调用 login.sh 登录
-  - 失败重试机制（指数退避）
-  - 日志记录
-
-#### 4. **etc/multilogin/login.sh**
-- **作用**: 登录执行脚本
-- **功能**:
-  - 接收命令行参数（接口、账号、密码、UA类型）
-  - 获取接口 IP 和 MAC 地址
-  - 检查当前认证状态
-  - 执行登录操作
-  - 返回状态码（0=成功, 1=失败, 2=已登录, 3+=错误）
-
-#### 5. **etc/init.d/multilogin**
-- **作用**: 系统服务脚本
-- **功能**:
-  - 使用 procd 管理 login_control.bash 进程
-  - 提供 start/stop/restart 操作
-  - 开机自启动支持
-  - 配置变更时自动重载
-
-#### 6. **etc/config/multilogin**
-- **作用**: UCI 配置文件
-- **内容**:
-  - `config settings 'global'` - 全局设置
-  - `config instance` - 多个登录实例配置
-
-#### 7. **Makefile**
-- **作用**: OpenWrt 编译配置
-- **功能**:
-  - 定义软件包信息
-  - 安装文件到正确位置
-  - 设置依赖关系（mwan3, curl）
-  - 安装后操作（启用服务）
-
-## 工作流程
-
-```
-1. 用户在 LuCI 界面配置
-   ↓
-2. 配置保存到 /etc/config/multilogin (UCI)
-   ↓
-3. 服务重启：/etc/init.d/multilogin restart
-   ↓
-4. procd 启动 login_control.bash
-   ↓
-5. login_control.bash 加载 UCI 配置
-   ↓
-6. 定期检查 mwan3 接口状态
-   ↓
-7. 发现离线接口 → 调用 login.sh
-   ↓
-8. login.sh 执行登录并返回状态
-   ↓
-9. 根据返回状态决定下次检查延迟
-   ↓
-10. 循环回到第 6 步
+```text
+htdocs/luci-static/resources/view/multilogin/
+  overview.js        # 摘要与恢复提醒
+  configuration.js   # 设置、账户、实例、显式服务应用
+  network.js         # 精确拥有的网络资源与恢复
+  scripts.js         # Phase 6 托管/自定义脚本管理器
+  diagnostics.js     # 有界脱敏日志与环境摘要
+root/usr/share/luci/menu.d/
+  luci-app-multi-login.json
+root/usr/libexec/
+  multilogin-config  # Phase 7 固定配置/网络/诊断 RPC
+  multilogin-script  # Phase 5 固定脚本 RPC
+etc/multilogin/
+  login_control.bash
+  cqu-portal.sh
 ```
 
-## 数据流
+实际安装路径、文件模式和完整状态模式以 [v3 合同](docs/v3/contracts.md) 为准。
 
-```
-LuCI Web 界面 (model/multilogin.lua)
-         ↕
-UCI 配置文件 (/etc/config/multilogin)
-         ↕
-Init 脚本 (/etc/init.d/multilogin)
-         ↕
-login_control.bash (后台进程)
-         ↕
-login.sh (登录执行)
-         ↕
-校园网认证服务器
-```
+## 产品导航
 
-## 关键技术点
+LuCI 只公开五个一级页面：**概览、配置、网络、脚本、诊断**。旧 `settings`、`accounts`、`interfaces`、`script` 和 `log` 地址为隐藏别名，转入新页面而不加载旧实现。
 
-### 1. LuCI CBI (Configuration Binding Interface)
-- 使用 `Map`, `TypedSection`, `Value`, `Flag`, `Button` 等组件
-- 自动处理 UCI 配置的读写
+所有页面都有原生 LuCI 的加载、空、错误和重试状态。操作按钮在请求进行时禁用，确认弹窗保护删除、登录/注销测试、服务变更、网络事务和脚本激活等有副作用的动作。布局使用可换行操作区和可滚动表格容器，避免窄屏页面横向溢出。
 
-### 2. Procd 进程管理
-- 使用 `USE_PROCD=1` 启用 procd 支持
-- 提供进程监控和自动重启
-- 支持配置变更触发器
+## 数据与安全
 
-### 3. UCI 配置系统
-- OpenWrt 统一配置接口
-- 使用 `uci` 命令读取配置
-- 支持配置验证和类型检查
+账户密码只在服务器端保存。浏览器收到的是 `password_set` 布尔值，而非掩码或秘密字符串；更新既有账户时，空密码表示保持原值。门户脚本从标准输入接收凭据，动作响应与诊断日志均只包含允许的、已脱敏的分类信息。
 
-### 4. Shell 脚本集成
-- Bash 数组和循环处理多个实例
-- 动态延迟时间管理
-- 信号处理（SIGTERM）
+脚本状态与网络所有权状态均为 root-only 文件，并通过代次、锁、原子写入和事务日志保护。脚本的自定义草稿是管理员输入的 root 级代码，不应包含任何秘密；活动、工厂、候选和备份脚本内容均不由浏览器读取。
 
-### 5. 状态检测
-- 使用 `pgrep` 检测进程状态
-- 按钮动态显示（启动/停止）
-- 实时 PID 显示
+网络页只管理 `network-state.json` 精确记录的 `ml3_*` 资源。事务会在网络、防火墙、mwan3 变更前写入 before/after 日志；恢复只能按固定状态归约执行。未记录资源（包含旧 `auto_*` 对象）绝不会被自动认领或删除。
 
-## 配置示例
+## 服务与运行流程
 
-### 最小配置
-```
-config settings 'global'
-    option enabled '1'
+配置保存与运行时服务变更分离。保存设置、账户或实例仅更改经验证的配置；页面随后通过固定 `service_action` 显式启动、停止、重启、启用或禁用 MultiLogin 服务。
 
-config instance 'wan1'
-    option enabled '1'
-    option interface 'wan'
-    option username 'student123'
-    option password 'pass123'
-    option ua_type 'pc'
-```
+运行时，控制器读取服务器端配置，为每个启用实例维护独立退避状态，并在 mwan3 接口离线时调用统一门户脚本。门户结果是机器可读的单个 JSON 信封；控制器依据可信状态、退出码和结果类别调度下一次尝试。
 
-### 完整配置
-```
-config settings 'global'
-    option enabled '1'
-    option log_level 'info'
-    option retry_interval '4'
-    option check_interval '5'
-    option max_retry_delay '16384'
-    option already_logged_delay '16'
+## 验证边界
 
-config instance 'pc1'
-    option enabled '1'
-    option alias 'PC登录-WAN1'
-    option interface 'wan'
-    option username 'student123'
-    option password 'password123'
-    option ua_type 'pc'
-
-config instance 'pc2'
-    option enabled '1'
-    option alias 'PC登录-WAN2'
-    option interface 'wan2'
-    option username 'student123'
-    option password 'password123'
-    option ua_type 'pc'
-
-config instance 'mobile1'
-    option enabled '1'
-    option alias '移动登录-WAN3'
-    option interface 'wan3'
-    option username 'student123'
-    option password 'password123'
-    option ua_type 'mobile'
-```
-
-## 编译和安装
-
-### 在 OpenWrt SDK 中编译
-
-1. 将 `luci-app-multilogin` 目录复制到 SDK 的 `package/` 目录
-
-2. 编译软件包：
-```bash
-make package/luci-app-multilogin/compile V=s
-```
-
-3. 生成的 ipk 文件位于：
-```
-bin/packages/<architecture>/packages/luci-app-multilogin_*.ipk
-```
-
-### 安装到路由器
-
-```bash
-# 上传 ipk 文件到路由器
-scp luci-app-multilogin_*.ipk root@192.168.1.1:/tmp/
-
-# SSH 登录路由器
-ssh root@192.168.1.1
-
-# 安装
-opkg install /tmp/luci-app-multilogin_*.ipk
-
-# 启用服务
-/etc/init.d/multilogin enable
-
-# 刷新 LuCI 缓存
-rm -f /tmp/luci-*
-```
-
-## 调试技巧
-
-### 查看日志
-```bash
-# 实时查看日志
-logread -f | grep multi_login
-
-# 查看历史日志
-logread | grep multi_login
-
-# 查看服务日志
-logread | grep multilogin
-```
-
-### 手动测试登录脚本
-```bash
-/etc/multilogin/login.sh \
-  --mwan3 wan \
-  --account your_account \
-  --password your_password \
-  --ua-type pc
-  
-echo "Exit code: $?"
-```
-
-### 检查服务状态
-```bash
-# 检查进程是否运行
-pgrep -f login_control.bash
-
-# 查看进程详情
-ps | grep login_control
-
-# 查看 mwan3 状态
-mwan3 interfaces
-```
-
-### 检查配置
-```bash
-# 显示所有配置
-uci show multilogin
-
-# 验证配置语法
-uci validate multilogin
-```
-
-## 常见问题
-
-### Q: 服务无法启动
-A: 
-1. 检查 bash 是否安装：`which bash`
-2. 检查脚本权限：`chmod +x /etc/multilogin/*.sh /etc/multilogin/*.bash`
-3. 查看错误日志：`logread | grep multilogin`
-
-### Q: 登录失败
-A:
-1. 检查 mwan3 配置：`mwan3 interfaces`
-2. 手动测试登录脚本
-3. 检查网络连接：`ping -I wan 10.254.7.4`
-
-### Q: Web 界面不显示
-A:
-1. 清除 LuCI 缓存：`rm -f /tmp/luci-*`
-2. 重启 uhttpd：`/etc/init.d/uhttpd restart`
-3. 重启 rpcd：`/etc/init.d/rpcd restart`
-
-## 许可证
-
-MIT License
-
-## 作者
-
-Based on luci-app-nettask project structure
+v3 的主机侧验证只覆盖编译、静态检查、纯逻辑、脱敏序列化和狭窄的秘密边界。它不模拟 OpenWrt、UCI、procd、网络、防火墙、mwan3、重启或门户行为。真实设备安装/升级、网络事务、认证、脚本执行与恢复属于 Phase 9，需要明确授权后按设备验收矩阵完成。

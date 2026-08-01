@@ -30,3 +30,9 @@ config synchronously, and retain only redacted metadata and secret hashes. The
 suite covers the action/exit contract, exact request sequence and parameters,
 bounded polling, multi-record identity selection, signal cleanup, and concurrent
 temporary-file isolation.
+
+Phase 7 checks are source/static and pure-policy only: fixed RPC schemas and
+envelopes, write-only account responses, redaction predicates, token/request
+validation, deterministic ownership plans and journal decisions, ACL/menu
+negative grants, and credential-free product documentation. They do not invoke
+rpcd, UCI, services, network commands, browsers, or a router filesystem.

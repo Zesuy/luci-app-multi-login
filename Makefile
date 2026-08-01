@@ -14,7 +14,7 @@ define Package/luci-app-multilogin
 	SUBMENU:=3. Applications
 	TITLE:=Multi-WAN Auto Login Manager
 	PKGARCH:=all
-	DEPENDS:=+curl +bash
+	DEPENDS:=+curl +bash +mwan3 +jsonfilter +luci-base
 endef
 
 define Package/luci-app-multilogin/description
@@ -49,7 +49,9 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-multi-login.json $(1)/usr/share/rpcd/acl.d/
 	$(INSTALL_BIN) ./root/usr/libexec/rpcd/multilogin $(1)/usr/libexec/rpcd/
 	$(INSTALL_BIN) ./root/usr/libexec/multilogin-script $(1)/usr/libexec/
+	$(INSTALL_BIN) ./root/usr/libexec/multilogin-config $(1)/usr/libexec/
 	$(INSTALL_DATA) ./root/usr/lib/multilogin/script-policy.sh $(1)/usr/lib/multilogin/
+	$(INSTALL_DATA) ./root/usr/lib/multilogin/config-policy.sh $(1)/usr/lib/multilogin/
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/multilogin/* $(1)/www/luci-static/resources/view/multilogin/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/

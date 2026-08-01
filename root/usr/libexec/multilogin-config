@@ -1,0 +1,1371 @@
+#!/bin/sh
+# Fixed Phase 7 configuration, diagnostics, service, log and network backend.
+# It is the only configuration/network helper called by rpcd or the legacy CLI.
+# BusyBox ash dynamic `ML_<field>` variables and deliberate compact checked
+# chains are used throughout this fixed dispatcher.
+# shellcheck disable=SC2015,SC2034,SC2086,SC2119,SC2120,SC2154,SC3043
+set -u
+LC_ALL=C
+export LC_ALL
+
+ML_NET_STATE=/etc/multilogin/network-state.json
+ML_NET_JOURNAL=/etc/multilogin/network-journal.json
+ML_LOCK=/var/lock/multilogin-config.lock
+ML_LOG=/var/log/multilogin.log
+ML_POLICY=/usr/lib/multilogin/config-policy.sh
+ML_JSHN=/usr/share/libubox/jshn.sh
+ML_LOCK_HELD=0
+ML_COMPAT_ERROR=0
+
+# shellcheck disable=SC1090
+. "$ML_POLICY" || exit 1
+# shellcheck disable=SC1090
+. "$ML_JSHN" || exit 1
+
+ml_cleanup() {
+	if [ "$ML_LOCK_HELD" = 1 ]; then
+		lock -u "$ML_LOCK" >/dev/null 2>&1 || :
+		ML_LOCK_HELD=0
+	fi
+}
+trap ml_cleanup EXIT HUP INT TERM
+
+ml_emit() {
+	local ok code message
+	ok=$1
+	code=$2
+	message=$3
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string code "$code"
+	json_add_string message "$message"
+	json_add_object data
+}
+
+ml_finish() {
+	json_close_object
+	json_dump
+	printf '\n'
+}
+
+ml_error() {
+	local code message
+	code=$1
+	message=$2
+	ml_emit 0 "$code" "$message"
+	json_close_object
+	[ "$ML_COMPAT_ERROR" = 0 ] || json_add_string error "$message"
+	json_dump
+	printf '\n'
+}
+
+ml_finish_legacy_result() {
+	local section
+	section=${1:-}
+	json_close_object
+	json_add_string result ok
+	[ -z "$section" ] || json_add_string section "$section"
+	json_dump
+	printf '\n'
+}
+
+ml_lock() {
+	local directory
+	directory=${ML_LOCK%/*}
+	[ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+	if [ ! -e "$ML_LOCK" ] && [ ! -L "$ML_LOCK" ]; then (umask 077 && : >"$ML_LOCK") 2>/dev/null || return 1; fi
+	[ -f "$ML_LOCK" ] && [ ! -L "$ML_LOCK" ] || return 1
+	chmod 0600 "$ML_LOCK" 2>/dev/null || return 1
+	chown 0:0 "$ML_LOCK" 2>/dev/null || return 1
+	lock "$ML_LOCK" >/dev/null 2>&1 || return 1
+	ML_LOCK_HELD=1
+}
+
+ml_atomic_text() {
+	local target content temporary directory
+	target=$1
+	content=$2
+	directory=${target%/*}
+	[ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+	temporary=$(umask 077 && mktemp "$directory/.multilogin-write.XXXXXX") || return 1
+	if ! printf '%s' "$content" >"$temporary" || ! chmod 0600 "$temporary" || ! chown 0:0 "$temporary" || ! mv -f "$temporary" "$target"; then
+		rm -f "$temporary" >/dev/null 2>&1 || :
+		return 1
+	fi
+	sync -f "$target" >/dev/null 2>&1 || sync >/dev/null 2>&1 || :
+	return 0
+}
+
+ml_secure_json_file() {
+	local file
+	file=$1
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	[ "$(stat -c '%a %u %g' "$file" 2>/dev/null)" = '600 0 0' ] || return 1
+}
+
+ml_state_parse() {
+	local file text keys generation base count canonical
+	file=$1
+	if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+		ML_STATE_JSON=$(ml_config_state_empty)
+		ML_STATE_GENERATION=0
+		ML_STATE_BASE=''
+		ML_STATE_COUNT=0
+		ML_STATE_VALID=1
+		return 0
+	fi
+	ml_secure_json_file "$file" || return 1
+	text=$(cat "$file" 2>/dev/null) || return 1
+	json_init
+	json_load "$text" || return 1
+	json_get_keys keys
+	keys=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+	[ "$keys" = 'base_iface count firewall_networks firewall_zone generation mwan3_members mwan3_policy mwan3_sections network_sections schema' ] || return 1
+	json_get_var generation generation
+	json_get_var base base_iface
+	json_get_var count count
+	json_get_var schema schema
+	[ "$schema" = 1 ] || return 1
+	ml_config_uint_range "$generation" 0 2147483647 && ml_config_uint_range "$count" 0 10 || return 1
+	if [ "$count" -eq 0 ]; then [ -z "$base" ] || return 1; else ml_config_iface "$base" || return 1; fi
+	canonical=$(ml_config_state_json "$generation" "$base" "$count")
+	[ "$text" = "$canonical" ] || return 1
+	ML_STATE_JSON=$canonical
+	ML_STATE_GENERATION=$generation
+	ML_STATE_BASE=$base
+	ML_STATE_COUNT=$count
+	ML_STATE_VALID=1
+	return 0
+}
+
+ml_journal_parse() {
+	local text keys before after schema operation state before_generation after_generation expected_after
+	if [ ! -e "$ML_NET_JOURNAL" ] && [ ! -L "$ML_NET_JOURNAL" ]; then
+		ML_JOURNAL_PRESENT=0
+		return 0
+	fi
+	ML_JOURNAL_PRESENT=1
+	ml_secure_json_file "$ML_NET_JOURNAL" || return 1
+	text=$(cat "$ML_NET_JOURNAL" 2>/dev/null) || return 1
+	json_init
+	json_load "$text" || return 1
+	json_get_keys keys
+	keys=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+	[ "$keys" = 'after before operation schema state' ] || return 1
+	json_get_var schema schema
+	json_get_var operation operation
+	json_get_var state state
+	[ "$schema" = 1 ] || return 1
+	case $operation in apply | remove) ;; *) return 1 ;; esac
+	case $state in prepared | network_committed | firewall_committed | mwan3_committed | services_reloaded | rollback_required) ;; *) return 1 ;; esac
+	json_select before
+	json_dump before
+	json_select ..
+	json_select after
+	json_dump after
+	json_select ..
+	# The nested values must themselves be canonical ownership states.
+	ML_JOURNAL_BEFORE=$before
+	ML_JOURNAL_AFTER=$after
+	ML_JOURNAL_OPERATION=$operation
+	ML_JOURNAL_STATE=$state
+	ml_state_parse_value "$before" || return 1
+	before_generation=$ML_VALUE_GENERATION
+	ML_JOURNAL_BEFORE_COUNT=$ML_VALUE_COUNT
+	ml_state_parse_value "$after" || return 1
+	after_generation=$ML_VALUE_GENERATION
+	ML_JOURNAL_AFTER_COUNT=$ML_VALUE_COUNT
+	[ "$after_generation" -eq $((before_generation + 1)) ] || return 1
+	if [ "$operation" = remove ]; then [ "$ML_VALUE_COUNT" -eq 0 ] || return 1; else [ "$ML_VALUE_COUNT" -ge 1 ] || return 1; fi
+	return 0
+}
+
+ml_state_parse_value() {
+	local text saved_state saved_generation saved_base saved_count temporary
+	text=$1
+	temporary=/tmp/.ml-state-$$
+	# Parse in memory: the canonical generator makes all unknown keys, whitespace,
+	# duplicate keys, and noncanonical ownership relations fail closed.
+	json_init
+	json_load "$text" || return 1
+	json_get_var generation generation
+	json_get_var base base_iface
+	json_get_var count count
+	json_get_var schema schema
+	[ "$schema" = 1 ] || return 1
+	ml_config_uint_range "$generation" 0 2147483647 && ml_config_uint_range "$count" 0 10 || return 1
+	if [ "$count" -eq 0 ]; then [ -z "$base" ] || return 1; else ml_config_iface "$base" || return 1; fi
+	[ "$text" = "$(ml_config_state_json "$generation" "$base" "$count")" ] || return 1
+	ML_VALUE_GENERATION=$generation
+	ML_VALUE_BASE=$base
+	ML_VALUE_COUNT=$count
+}
+
+ml_network_status() {
+	ML_NETWORK_RECOVERY=0
+	ML_NETWORK_VALID=1
+	if ! ml_state_parse "$ML_NET_STATE"; then
+		ML_NETWORK_VALID=0
+		ML_NETWORK_RECOVERY=1
+		return 1
+	fi
+	if ! ml_journal_parse; then
+		ML_NETWORK_RECOVERY=1
+		return 0
+	fi
+	[ "$ML_JOURNAL_PRESENT" = 0 ] || ML_NETWORK_RECOVERY=1
+	return 0
+}
+
+ml_network_interfaces() {
+	local n
+	n=1
+	while [ "$n" -le "$ML_STATE_COUNT" ]; do
+		json_add_object '' 2>/dev/null || :
+		n=$((n + 1))
+	done
+}
+
+ml_add_owned_interfaces() {
+	local n
+	n=1
+	while [ "$n" -le "$ML_STATE_COUNT" ]; do
+		json_add_object
+		json_add_string name "ml3_if_$n"
+		json_add_string device "ml3_dev_$n"
+		json_add_int metric $((10 + n))
+		json_close_object
+		n=$((n + 1))
+	done
+}
+
+ml_network_legacy() {
+	local operation base count
+	operation=$1
+	base=$2
+	count=$3
+	json_add_string result ok
+	[ "$operation" = apply ] || return 0
+	json_add_string base_iface "$base"
+	json_add_int count "$count"
+	json_add_array interfaces
+	ml_add_owned_interfaces
+	json_close_array
+}
+
+ml_service_enabled() { [ -e /etc/rc.d/S99multilogin ] && [ ! -L /etc/rc.d/S99multilogin ] || [ -L /etc/rc.d/S99multilogin ]; }
+ml_service_running() { ubus -S call service list '{"name":"multilogin"}' 2>/dev/null | grep -q '"running"[[:space:]]*:[[:space:]]*true'; }
+
+ml_parse_request() {
+	local raw trimmed keys
+	raw=$(cat) || return 1
+	trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || return 1
+	case $trimmed in \{*\}) ;; *) return 1 ;; esac
+	json_init
+	json_load "$trimmed" || return 1
+	json_get_keys keys
+	ML_REQUEST_KEYS=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+}
+
+ml_request_type() {
+	# jshn's type query rejects numeric/string/boolean coercion before any UCI
+	# operation. Callers provide the frozen expected JSON type for each field.
+	local field expected actual
+	field=$1
+	expected=$2
+	json_get_type actual "$field" || return 1
+	[ "$actual" = "$expected" ]
+}
+
+ml_req() { json_get_var "ML_$1" "$1"; }
+
+ml_valid_text() {
+	local value limit
+	value=$1
+	limit=$2
+	[ "${#value}" -le "$limit" ] || return 1
+	case $value in *"$(printf '\r')"* | *"$(printf '\n')"*) return 1 ;; esac
+	return 0
+}
+
+ml_valid_username() {
+	ml_valid_text "$1" 256 && [ -n "$1" ] || return 1
+	printf '%s' "$1" | grep -q '[[:cntrl:]]' && return 1
+	return 0
+}
+
+ml_commit_multilogin() { uci commit multilogin >/dev/null 2>&1; }
+
+ml_uci_quote() {
+	# UCI batch receives this on stdin; in particular, passwords never become a
+	# child argv element, diagnostic, or temporary-file payload.
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+
+ml_section_type() { uci -q get "multilogin.$1" 2>/dev/null; }
+
+ml_collect_sections() {
+	# Names are read from trusted UCI output, then revalidated before use.
+	uci -q show multilogin 2>/dev/null | sed -n "s/^multilogin\\.\\([A-Za-z_][A-Za-z0-9_]*\\)=\('$2'\|$2\)$/\\1/p" | LC_ALL=C sort -u
+}
+
+ml_emit_service() {
+	json_add_boolean enabled "$(ml_service_enabled && printf 1 || printf 0)"
+	json_add_boolean running "$(ml_service_running && printf 1 || printf 0)"
+}
+
+ml_get_settings() {
+	local enabled level retry check maximum already
+	enabled=$(uci -q get multilogin.global.enabled)
+	ml_config_boolean "$enabled" || enabled=0
+	level=$(uci -q get multilogin.global.log_level)
+	ml_config_log_level "$level" || level=info
+	retry=$(uci -q get multilogin.global.retry_interval)
+	ml_config_uint_range "$retry" 1 3600 || retry=4
+	check=$(uci -q get multilogin.global.check_interval)
+	ml_config_uint_range "$check" 1 3600 || check=5
+	maximum=$(uci -q get multilogin.global.max_retry_delay)
+	ml_config_uint_range "$maximum" 1 86400 || maximum=16384
+	[ "$maximum" -ge "$retry" ] 2>/dev/null || maximum=$retry
+	already=$(uci -q get multilogin.global.already_logged_delay)
+	ml_config_uint_range "$already" 1 86400 || already=16
+	json_add_string enabled "$enabled"
+	json_add_string log_level "$level"
+	json_add_int retry_interval "$retry"
+	json_add_int check_interval "$check"
+	json_add_int max_retry_delay "$maximum"
+	json_add_int already_logged_delay "$already"
+}
+
+ml_get_overview() {
+	local settings accounts instances enabled_instances
+	ml_network_status || :
+	settings=$(uci -q get multilogin.global.enabled)
+	ml_config_boolean "$settings" || settings=0
+	accounts=$(ml_collect_sections account | grep -c . || :)
+	instances=$(ml_collect_sections instance | grep -c . || :)
+	enabled_instances=0
+	for section in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$section.enabled")" = 1 ] && enabled_instances=$((enabled_instances + 1)); done
+	json_add_boolean settings_enabled "$settings"
+	json_add_boolean service_enabled "$(ml_service_enabled && printf 1 || printf 0)"
+	json_add_boolean service_running "$(ml_service_running && printf 1 || printf 0)"
+	json_add_int account_count "$accounts"
+	json_add_int instance_count "$instances"
+	json_add_int enabled_instance_count "$enabled_instances"
+	if [ "$ML_NETWORK_VALID" = 1 ]; then json_add_int owned_network_count "$ML_STATE_COUNT"; else json_add_int owned_network_count 0; fi
+	json_add_boolean network_recovery_required "$ML_NETWORK_RECOVERY"
+}
+
+ml_save_settings() {
+	ml_request_type enabled string && ml_request_type log_level string && ml_request_type retry_interval int && ml_request_type check_interval int && ml_request_type max_retry_delay int && ml_request_type already_logged_delay int || {
+		ml_error invalid_request 'invalid settings types'
+		return
+	}
+	ml_req enabled
+	ml_req log_level
+	ml_req retry_interval
+	ml_req check_interval
+	ml_req max_retry_delay
+	ml_req already_logged_delay
+	ml_config_boolean "$ML_enabled" && ml_config_log_level "$ML_log_level" && ml_config_uint_range "$ML_retry_interval" 1 3600 && ml_config_uint_range "$ML_check_interval" 1 3600 && ml_config_uint_range "$ML_max_retry_delay" 1 86400 && ml_config_uint_range "$ML_already_logged_delay" 1 86400 && [ "$ML_max_retry_delay" -ge "$ML_retry_interval" ] 2>/dev/null || {
+		ml_error invalid_request 'invalid settings'
+		return
+	}
+	if [ "$(uci -q get multilogin.global.enabled)" = "$ML_enabled" ] && [ "$(uci -q get multilogin.global.log_level)" = "$ML_log_level" ] && [ "$(uci -q get multilogin.global.retry_interval)" = "$ML_retry_interval" ] && [ "$(uci -q get multilogin.global.check_interval)" = "$ML_check_interval" ] && [ "$(uci -q get multilogin.global.max_retry_delay)" = "$ML_max_retry_delay" ] && [ "$(uci -q get multilogin.global.already_logged_delay)" = "$ML_already_logged_delay" ]; then
+		ml_emit 1 no_change ''
+		ml_get_settings
+		json_add_boolean restart_required 0
+		ml_finish
+		return
+	fi
+	uci set multilogin.global.enabled="$ML_enabled" && uci set multilogin.global.log_level="$ML_log_level" && uci set multilogin.global.retry_interval="$ML_retry_interval" && uci set multilogin.global.check_interval="$ML_check_interval" && uci set multilogin.global.max_retry_delay="$ML_max_retry_delay" && uci set multilogin.global.already_logged_delay="$ML_already_logged_delay" && ml_commit_multilogin || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_emit 1 ok ''
+	ml_get_settings
+	json_add_boolean restart_required 1
+	ml_finish
+}
+
+ml_list_accounts() {
+	local section alias username password references count
+	ml_emit 1 ok ''
+	json_add_array accounts
+	for section in $(ml_collect_sections account); do
+		ml_config_token "$section" || continue
+		alias=$(uci -q get "multilogin.$section.alias")
+		username=$(uci -q get "multilogin.$section.username")
+		password=$(uci -q get "multilogin.$section.password")
+		count=0
+		for references in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$references.account")" = "$section" ] && count=$((count + 1)); done
+		json_add_object
+		json_add_string section "$section"
+		json_add_string alias "$alias"
+		json_add_string username "$username"
+		[ -n "$password" ] && json_add_boolean password_set 1 || json_add_boolean password_set 0
+		json_add_int reference_count "$count"
+		json_close_object
+	done
+	json_close_array
+	ml_finish
+}
+
+ml_save_account() {
+	local section alias username password existing created
+	ml_request_type section string && ml_request_type alias string && ml_request_type username string && ml_request_type password string || {
+		ml_error invalid_request 'invalid account types'
+		return
+	}
+	ml_req section
+	ml_req alias
+	ml_req username
+	ml_req password
+	section=$ML_section
+	alias=$ML_alias
+	username=$ML_username
+	password=$ML_password
+	created=0
+	ml_valid_text "$alias" 128 && ml_valid_username "$username" && ml_valid_text "$password" 4096 || {
+		ml_error invalid_request 'invalid account'
+		return
+	}
+	# A new account must prove it has a password before a section is allocated.
+	[ -n "$section" ] || [ -n "$password" ] || {
+		ml_error invalid_request 'password is required'
+		return
+	}
+	if [ -n "$section" ]; then ml_config_token "$section" && [ "$(ml_section_type "$section")" = account ] || {
+		ml_error not_found 'account not found'
+		return
+	}; else
+		section=$(uci add multilogin account 2>/dev/null) || {
+			ml_error internal_error 'configuration write failed'
+			return
+		}
+		ml_config_token "$section" || {
+			uci revert multilogin >/dev/null 2>&1 || :
+			ml_error internal_error 'invalid generated section'
+			return
+		}
+		created=1
+	fi
+	existing=$(uci -q get "multilogin.$section.password")
+	if [ -z "$password" ] && { [ "$created" = 1 ] || [ -z "$existing" ]; }; then
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error invalid_request 'password is required'
+		return
+	fi
+	{
+		printf 'set multilogin.%s.alias=%s\n' "$section" "$(ml_uci_quote "$alias")"
+		printf 'set multilogin.%s.username=%s\n' "$section" "$(ml_uci_quote "$username")"
+		[ -z "$password" ] || printf 'set multilogin.%s.password=%s\n' "$section" "$(ml_uci_quote "$password")"
+	} | uci batch >/dev/null 2>&1 || {
+		password=''
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	password=''
+	ml_commit_multilogin || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_string section "$section"
+	json_add_boolean password_set 1
+	ml_finish_legacy_result "$section"
+}
+
+ml_delete_account() {
+	local section reference refs
+	ml_request_type section string || {
+		ml_error invalid_request 'invalid account types'
+		return
+	}
+	ml_req section
+	section=$ML_section
+	ml_config_token "$section" && [ "$(ml_section_type "$section")" = account ] || {
+		ml_error not_found 'account not found'
+		return
+	}
+	refs=''
+	for reference in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$reference.account")" = "$section" ] && refs="$refs $reference"; done
+	if [ -n "$refs" ]; then
+		ml_emit 0 conflict 'account is referenced'
+		json_add_array references
+		for reference in $refs; do json_add_string '' "$reference"; done
+		json_close_array
+		ml_finish
+		return
+	fi
+	uci delete "multilogin.$section" && ml_commit_multilogin || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_string section "$section"
+	ml_finish_legacy_result "$section"
+}
+
+ml_list_instances() {
+	local section enabled alias interface v6face account account_label ua iface_list
+	ml_emit 1 ok ''
+	json_add_array instances
+	for section in $(ml_collect_sections instance); do
+		ml_config_token "$section" || continue
+		enabled=$(uci -q get "multilogin.$section.enabled")
+		ml_config_boolean "$enabled" || enabled=0
+		alias=$(uci -q get "multilogin.$section.alias")
+		interface=$(uci -q get "multilogin.$section.interface")
+		v6face=$(uci -q get "multilogin.$section.v6face")
+		account=$(uci -q get "multilogin.$section.account")
+		ml_config_iface "$interface" || interface=''
+		[ -z "$v6face" ] || ml_config_iface "$v6face" || v6face=''
+		ml_config_token "$account" && [ "$(ml_section_type "$account")" = account ] || account=''
+		if [ -n "$account" ]; then account_label=$(uci -q get "multilogin.$account.alias"); else account_label=''; fi
+		ua=$(uci -q get "multilogin.$section.ua_type")
+		ml_config_ua_type "$ua" || ua=pc
+		json_add_object
+		json_add_string section "$section"
+		json_add_string enabled "$enabled"
+		json_add_string alias "$alias"
+		json_add_string interface "$interface"
+		json_add_string v6face "$v6face"
+		json_add_string account "$account"
+		json_add_string account_label "$account_label"
+		json_add_string ua_type "$ua"
+		json_close_object
+	done
+	json_close_array
+	json_add_array interfaces
+	iface_list=$(uci -q show network 2>/dev/null | sed -n 's/^network\.\([A-Za-z0-9][A-Za-z0-9_.:-]*\)=interface$/\1/p' | LC_ALL=C sort -u)
+	for interface in $iface_list; do ml_config_iface "$interface" && json_add_string '' "$interface"; done
+	json_close_array
+	ml_finish
+}
+
+ml_save_instance() {
+	local section enabled alias interface v6face account ua created
+	ml_request_type section string && ml_request_type enabled string && ml_request_type alias string && ml_request_type interface string && ml_request_type v6face string && ml_request_type account string && ml_request_type ua_type string || {
+		ml_error invalid_request 'invalid instance types'
+		return
+	}
+	ml_req section
+	ml_req enabled
+	ml_req alias
+	ml_req interface
+	ml_req v6face
+	ml_req account
+	ml_req ua_type
+	section=$ML_section
+	enabled=$ML_enabled
+	alias=$ML_alias
+	interface=$ML_interface
+	v6face=$ML_v6face
+	account=$ML_account
+	ua=$ML_ua_type
+	created=0
+	ml_config_boolean "$enabled" && ml_valid_text "$alias" 128 && ml_config_iface "$interface" && { [ -z "$v6face" ] || ml_config_iface "$v6face"; } && ml_config_token "$account" && [ "$(ml_section_type "$account")" = account ] && ml_config_ua_type "$ua" || {
+		ml_error invalid_request 'invalid instance'
+		return
+	}
+	if [ -n "$section" ]; then ml_config_token "$section" && [ "$(ml_section_type "$section")" = instance ] || {
+		ml_error not_found 'instance not found'
+		return
+	}; else
+		section=$(uci add multilogin instance 2>/dev/null) || {
+			ml_error internal_error 'configuration write failed'
+			return
+		}
+		ml_config_token "$section" || {
+			uci revert multilogin >/dev/null 2>&1 || :
+			ml_error internal_error 'invalid generated section'
+			return
+		}
+		created=1
+	fi
+	if [ "$created" = 0 ] && [ "$(uci -q get "multilogin.$section.enabled")" = "$enabled" ] && [ "$(uci -q get "multilogin.$section.alias")" = "$alias" ] && [ "$(uci -q get "multilogin.$section.interface")" = "$interface" ] && [ "$(uci -q get "multilogin.$section.v6face")" = "$v6face" ] && [ "$(uci -q get "multilogin.$section.account")" = "$account" ] && [ "$(uci -q get "multilogin.$section.ua_type")" = "$ua" ]; then
+		ml_emit 1 no_change ''
+		json_add_string section "$section"
+		json_add_boolean restart_required 0
+		ml_finish_legacy_result "$section"
+		return
+	fi
+	uci set "multilogin.$section.enabled=$enabled" && uci set "multilogin.$section.alias=$alias" && uci set "multilogin.$section.interface=$interface" && uci set "multilogin.$section.account=$account" && uci set "multilogin.$section.ua_type=$ua" || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	if [ -n "$v6face" ]; then uci set "multilogin.$section.v6face=$v6face"; else uci -q delete "multilogin.$section.v6face"; fi || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_commit_multilogin || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_string section "$section"
+	json_add_boolean restart_required 1
+	ml_finish_legacy_result "$section"
+}
+
+ml_delete_instance() {
+	local section
+	ml_request_type section string || {
+		ml_error invalid_request 'invalid instance types'
+		return
+	}
+	ml_req section
+	section=$ML_section
+	ml_config_token "$section" && [ "$(ml_section_type "$section")" = instance ] || {
+		ml_error not_found 'instance not found'
+		return
+	}
+	uci delete "multilogin.$section" && ml_commit_multilogin || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_string section "$section"
+	json_add_boolean restart_required 1
+	ml_finish_legacy_result "$section"
+}
+
+ml_service_status() {
+	ml_emit 1 ok ''
+	ml_emit_service
+	ml_finish
+}
+
+ml_service_action() {
+	local action
+	ml_request_type action string || {
+		ml_error invalid_request 'invalid service action'
+		return
+	}
+	ml_req action
+	action=$ML_action
+	ml_config_action "$action" || {
+		ml_error invalid_request 'invalid service action'
+		return
+	}
+	/etc/init.d/multilogin "$action" >/dev/null 2>&1 || {
+		ml_error internal_error 'service action failed'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_string action "$action"
+	ml_emit_service
+	ml_finish
+}
+
+ml_log_key_line() {
+	# Quoted keys are accepted too; a matching key hides the complete line.
+	printf '%s\n' "$1" | grep -Eiq "(^|[^[:alnum:]_])[\"']?(authorization|cookie|set-cookie|[^[:space:]]*(password|passwd|secret|token)[^[:space:]]*)[\"']?[[:space:]]*[:=]"
+}
+
+ml_secure_log() {
+	[ -f "$ML_LOG" ] && [ ! -L "$ML_LOG" ] || return 1
+	[ "$(stat -c '%a %u %g' "$ML_LOG" 2>/dev/null)" = '600 0 0' ]
+}
+
+ml_literal_replace() {
+	# The caller obtains each server-side UCI account password before this exact
+	# literal replacement; it is never converted into a regex, argv element,
+	# log field, or temporary file.
+	local line password prefix
+	line=$1
+	password=$2
+	ML_REDACT_LINE=''
+	[ -n "$password" ] || {
+		ML_REDACT_LINE=$line
+		return
+	}
+	while :; do
+		case $line in
+		*"$password"*)
+			prefix=${line%%"$password"*}
+			ML_REDACT_LINE=$ML_REDACT_LINE$prefix'[REDACTED]'
+			line=${line#*"$password"}
+			;;
+		*)
+			ML_REDACT_LINE=$ML_REDACT_LINE$line
+			return
+			;;
+		esac
+	done
+}
+
+ml_redact_ipv4_line() {
+	LC_ALL=C awk '
+		function valid(s, a,n,i) { n=split(s,a,"."); if (n!=4) return 0; for(i=1;i<=4;i++) if(a[i]!~/^[0-9][0-9]*$/ || length(a[i])>3 || a[i]+0>255) return 0; return 1 }
+		{
+			out=""; token=""
+			for(i=1;i<=length($0)+1;i++) {
+				c=substr($0,i,1)
+				if(c~/[0-9.]/) { token=token c; continue }
+				if(token!="") { out=out (valid(token) ? "[IP]" : token); token="" }
+				if(i<=length($0)) out=out c
+			}
+			print out
+		}
+	'
+}
+
+ml_contains_ipv4() {
+	LC_ALL=C awk '
+		function valid(s, a,n,i) { n=split(s,a,"."); if(n!=4) return 0; for(i=1;i<=4;i++) if(a[i]!~/^[0-9][0-9]*$/ || length(a[i])>3 || a[i]+0>255) return 0; return 1 }
+		{
+			token=""
+			for(i=1;i<=length($0)+1;i++) { c=substr($0,i,1); if(c~/[0-9.]/) { token=token c; continue } if(token!="" && valid(token)) { found=1; exit }; token="" }
+		}
+		END { exit(found ? 0 : 1) }
+	'
+}
+
+ml_redact_log() {
+	local file line section password
+	file=$1
+	# Enumeration failures are fatal: returning a partially redacted log would
+	# violate the write-only password boundary.
+	sections=$(ml_collect_sections account) || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		if ml_log_key_line "$line"; then
+			printf '%s\n' '[REDACTED]'
+			continue
+		fi
+		for section in $sections; do
+			password=$(uci -q get "multilogin.$section.password") || return 1
+			ml_literal_replace "$line" "$password"
+			line=$ML_REDACT_LINE
+			password=''
+		done
+		# Ordered privacy pass: MAC first, strict IPv4 next, then broad colon tokens.
+		line=$(printf '%s\n' "$line" | sed -E 's/([[:xdigit:]]{2}[:-]){5}[[:xdigit:]]{2}|(^|[^[:xdigit:]])[[:xdigit:]]{12}([^[:xdigit:]]|$)/[MAC]/g') || return 1
+		line=$(printf '%s\n' "$line" | ml_redact_ipv4_line) || return 1
+		printf '%s\n' "$line" | sed -E 's/[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/[IP]/g' || return 1
+	done <"$file"
+}
+
+ml_log_rescan() {
+	local file line section password
+	file=$1
+	sections=$(ml_collect_sections account) || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		ml_log_key_line "$line" && return 1
+		for section in $sections; do
+			password=$(uci -q get "multilogin.$section.password") || return 1
+			[ -n "$password" ] && case $line in *"$password"*)
+				password=''
+				return 1
+				;;
+			esac
+			password=''
+		done
+		printf '%s\n' "$line" | grep -Eq '([[:xdigit:]]{2}[:-]){5}[[:xdigit:]]{2}|(^|[^[:xdigit:]])[[:xdigit:]]{12}([^[:xdigit:]]|$)' && return 1
+		printf '%s\n' "$line" | ml_contains_ipv4 && return 1
+		printf '%s\n' "$line" | grep -Eq '[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*' && return 1
+	done <"$file"
+	return 0
+}
+
+ml_get_logs() {
+	local before after content lines source_bytes selected_bytes truncated temporary selected
+	if [ ! -e "$ML_LOG" ] && [ ! -L "$ML_LOG" ]; then
+		ml_emit 1 ok ''
+		json_add_string content ''
+		json_add_boolean truncated 0
+		ml_finish
+		return
+	fi
+	ml_secure_log || {
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	ml_utf8_valid "$ML_LOG" || {
+		ml_error internal_error 'log encoding invalid'
+		return
+	}
+	before=$(sha256sum "$ML_LOG" 2>/dev/null | awk '{print $1}') || {
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	temporary=$(mktemp /tmp/multilogin-log.XXXXXX) || {
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	chmod 0600 "$temporary" || :
+	selected=$(mktemp /tmp/multilogin-log-tail.XXXXXX) || {
+		rm -f "$temporary"
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	chmod 0600 "$selected" || :
+	ml_redact_log "$ML_LOG" >"$temporary" || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	after=$(sha256sum "$ML_LOG" 2>/dev/null | awk '{print $1}')
+	[ -n "$after" ] && [ "$before" = "$after" ] || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log changed during read'
+		return
+	}
+	ml_log_rescan "$temporary" || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log redaction failed'
+		return
+	}
+	ml_utf8_valid "$temporary" || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log redaction failed'
+		return
+	}
+	ml_log_tail_complete "$temporary" >"$selected" 2>/dev/null || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	content=$(cat "$selected" 2>/dev/null) || {
+		rm -f "$temporary" "$selected"
+		ml_error internal_error 'log unavailable'
+		return
+	}
+	lines=$(awk 'END { print NR+0 }' "$temporary" 2>/dev/null || printf 0)
+	source_bytes=$(wc -c <"$temporary" 2>/dev/null || printf 0)
+	selected_bytes=$(wc -c <"$selected" 2>/dev/null || printf 0)
+	truncated=0
+	[ "$lines" -gt 500 ] 2>/dev/null && truncated=1
+	[ "$selected_bytes" -lt "$source_bytes" ] 2>/dev/null && truncated=1
+	rm -f "$temporary" "$selected"
+	ml_emit 1 ok ''
+	json_add_string content "$content"
+	json_add_boolean truncated "$truncated"
+	ml_finish
+}
+
+ml_clear_logs() {
+	if [ -e "$ML_LOG" ] || [ -L "$ML_LOG" ]; then ml_secure_log && : >"$ML_LOG" && ml_secure_log || {
+		ml_error internal_error 'log unavailable'
+		return
+	}; fi
+	ml_emit 1 ok ''
+	json_add_boolean cleared 1
+	ml_finish
+}
+
+ml_uci_checked() { uci "$@" >/dev/null 2>&1; }
+
+ml_uci_delete_optional() {
+	uci -q get "$1" >/dev/null 2>&1 || return 0
+	ml_uci_checked -q delete "$1"
+}
+
+ml_uci_del_list_optional() {
+	local key value item current
+	key=$1
+	value=$2
+	current=$(uci -q get "$key" 2>/dev/null || :)
+	for item in $current; do
+		[ "$item" = "$value" ] || continue
+		ml_uci_checked -q del_list "$key=$value"
+		return
+	done
+	return 0
+}
+
+ml_apply_plan() {
+	local before_count after_count base n spec
+	before_count=$1
+	after_count=$2
+	base=$3
+	n=1
+	while [ "$n" -le 10 ]; do
+		if [ "$n" -le "$before_count" ] || [ "$n" -le "$after_count" ]; then
+			ml_uci_delete_optional "network.ml3_dev_$n" || return 1
+			ml_uci_delete_optional "network.ml3_if_$n" || return 1
+			ml_uci_delete_optional "mwan3.ml3_if_$n" || return 1
+			ml_uci_delete_optional "mwan3.ml3_member_$n" || return 1
+			ml_uci_del_list_optional mwan3.balanced.use_member "ml3_member_$n" || return 1
+		fi
+		n=$((n + 1))
+	done
+	if [ "$before_count" -gt 0 ] || [ "$after_count" -gt 0 ]; then
+		ml_uci_delete_optional firewall.ml3_zone || return 1
+	fi
+	n=1
+	while [ "$n" -le "$after_count" ]; do
+		for spec in \
+			"network.ml3_dev_$n=device" "network.ml3_dev_$n.type=macvlan" "network.ml3_dev_$n.ifname=$base" "network.ml3_dev_$n.name=ml3_dev_$n" "network.ml3_dev_$n.mode=private" "network.ml3_dev_$n.ipv6=0" \
+			"network.ml3_if_$n=interface" "network.ml3_if_$n.proto=dhcp" "network.ml3_if_$n.device=ml3_dev_$n" "network.ml3_if_$n.metric=$((10 + n))" \
+			"mwan3.ml3_if_$n=interface" "mwan3.ml3_if_$n.enabled=1" "mwan3.ml3_if_$n.family=ipv4" "mwan3.ml3_if_$n.initial_state=offline" "mwan3.ml3_if_$n.track_method=ping" "mwan3.ml3_if_$n.reliability=1" "mwan3.ml3_if_$n.count=1" "mwan3.ml3_if_$n.size=56" "mwan3.ml3_if_$n.max_ttl=60" "mwan3.ml3_if_$n.timeout=2" "mwan3.ml3_if_$n.interval=5" "mwan3.ml3_if_$n.failure_interval=5" "mwan3.ml3_if_$n.recovery_interval=5" "mwan3.ml3_if_$n.down=2" "mwan3.ml3_if_$n.up=3" \
+			"mwan3.ml3_member_$n=member" "mwan3.ml3_member_$n.interface=ml3_if_$n" "mwan3.ml3_member_$n.metric=1" "mwan3.ml3_member_$n.weight=5"; do
+			ml_uci_checked set "$spec" || return 1
+		done
+		ml_uci_checked add_list "mwan3.ml3_if_$n.track_ip=223.5.5.5" || return 1
+		ml_uci_checked add_list "mwan3.ml3_if_$n.track_ip=114.114.114.114" || return 1
+		ml_uci_checked add_list "mwan3.balanced.use_member=ml3_member_$n" || return 1
+		n=$((n + 1))
+	done
+	if [ "$after_count" -gt 0 ]; then
+		for spec in firewall.ml3_zone=zone firewall.ml3_zone.name=ml3 firewall.ml3_zone.input=REJECT firewall.ml3_zone.output=ACCEPT firewall.ml3_zone.forward=REJECT firewall.ml3_zone.masq=1 firewall.ml3_zone.mtu_fix=1; do
+			ml_uci_checked set "$spec" || return 1
+		done
+		n=1
+		while [ "$n" -le "$after_count" ]; do
+			ml_uci_checked add_list "firewall.ml3_zone.network=ml3_if_$n" || return 1
+			n=$((n + 1))
+		done
+	fi
+}
+
+ml_utf8_valid() {
+	local octets
+	octets=$(LC_ALL=C od -An -v -tu1 "$1" 2>/dev/null) || return 1
+	printf '%s\n' "$octets" | awk '
+		BEGIN { need=0; first=0; lo=128; hi=191 }
+		{
+			for (i=1; i<=NF; i++) {
+				b=$i+0
+				if (need == 0) {
+					if (b <= 127) continue
+					if (b >= 194 && b <= 223) { need=1; first=1; lo=128; hi=191; continue }
+					if (b == 224) { need=2; first=1; lo=160; hi=191; continue }
+					if (b >= 225 && b <= 236) { need=2; first=1; lo=128; hi=191; continue }
+					if (b == 237) { need=2; first=1; lo=128; hi=159; continue }
+					if (b >= 238 && b <= 239) { need=2; first=1; lo=128; hi=191; continue }
+					if (b == 240) { need=3; first=1; lo=144; hi=191; continue }
+					if (b >= 241 && b <= 243) { need=3; first=1; lo=128; hi=191; continue }
+					if (b == 244) { need=3; first=1; lo=128; hi=143; continue }
+					exit 1
+				}
+				if (first) { if (b < lo || b > hi) exit 1; first=0 }
+				else if (b < 128 || b > 191) exit 1
+				need--
+			}
+		}
+		END { if (need != 0) exit 1 }
+	'
+}
+
+ml_ipv4_token_valid() {
+	printf '%s\n' "$1" | awk -F. 'NF == 4 { for (i=1;i<=4;i++) if ($i !~ /^[0-9][0-9]*$/ || length($i)>3 || $i+0>255) exit 1; exit 0 } { exit 1 }'
+}
+
+ml_log_tail_complete() {
+	LC_ALL=C awk '
+		{ slot=(NR-1)%500; line[slot]=$0 ORS; number[slot]=NR }
+		END {
+			start=NR>500 ? NR-499 : 1; total=0; first=NR+1
+			for (n=NR;n>=start;n--) { slot=(n-1)%500; size=length(line[slot]); if (total+size>65536) break; total+=size; first=n }
+			for (n=first;n<=NR;n++) { slot=(n-1)%500; if (number[slot]==n) printf "%s", line[slot] }
+		}
+	' "$1"
+}
+
+ml_expect_section() {
+	local package section type expected_lines actual_lines assignment option expected actual
+	package=$1
+	section=$2
+	type=$3
+	expected_lines=$4
+	shift 4
+	[ "$(uci -q get "$package.$section" 2>/dev/null)" = "$type" ] || return 1
+	actual_lines=$(uci -q show "$package.$section" 2>/dev/null | awk 'END { print NR+0 }') || return 1
+	[ "$actual_lines" -eq "$expected_lines" ] 2>/dev/null || return 1
+	for assignment in "$@"; do
+		option=${assignment%%=*}
+		expected=${assignment#*=}
+		actual=$(uci -q get "$package.$section.$option" 2>/dev/null) || return 1
+		[ "$actual" = "$expected" ] || return 1
+	done
+}
+
+ml_member_occurrences() {
+	local wanted item found
+	wanted=$1
+	found=0
+	for item in $(uci -q get mwan3.balanced.use_member 2>/dev/null || :); do [ "$item" = "$wanted" ] && found=$((found + 1)); done
+	printf '%s\n' "$found"
+}
+
+ml_verify_owned_plan() {
+	local n firewall_networks
+	[ "$(uci -q get mwan3.balanced 2>/dev/null)" = policy ] || return 1
+	n=1
+	firewall_networks=''
+	while [ "$n" -le "$ML_STATE_COUNT" ]; do
+		ml_expect_section network "ml3_dev_$n" device 6 type=macvlan "ifname=$ML_STATE_BASE" "name=ml3_dev_$n" mode=private ipv6=0 || return 1
+		ml_expect_section network "ml3_if_$n" interface 5 proto=dhcp "device=ml3_dev_$n" "metric=$((10 + n))" || return 1
+		ml_expect_section mwan3 "ml3_if_$n" interface 17 enabled=1 family=ipv4 initial_state=offline track_method=ping reliability=1 count=1 size=56 max_ttl=60 timeout=2 interval=5 failure_interval=5 recovery_interval=5 down=2 up=3 "track_ip=223.5.5.5 114.114.114.114" || return 1
+		ml_expect_section mwan3 "ml3_member_$n" member 4 "interface=ml3_if_$n" metric=1 weight=5 || return 1
+		[ "$(ml_member_occurrences "ml3_member_$n")" -eq 1 ] || return 1
+		[ -z "$firewall_networks" ] || firewall_networks="$firewall_networks "
+		firewall_networks="${firewall_networks}ml3_if_$n"
+		n=$((n + 1))
+	done
+	if [ "$ML_STATE_COUNT" -gt 0 ]; then
+		ml_expect_section firewall ml3_zone zone "$((7 + ML_STATE_COUNT))" name=ml3 input=REJECT output=ACCEPT forward=REJECT masq=1 mtu_fix=1 "network=$firewall_networks" || return 1
+	fi
+	return 0
+}
+
+ml_verify_reserved_collisions() {
+	local n
+	n=1
+	while [ "$n" -le 10 ]; do
+		if [ "$n" -gt "$ML_STATE_COUNT" ]; then
+			uci -q get "network.ml3_dev_$n" >/dev/null 2>&1 && return 1
+			uci -q get "network.ml3_if_$n" >/dev/null 2>&1 && return 1
+			uci -q get "mwan3.ml3_if_$n" >/dev/null 2>&1 && return 1
+			uci -q get "mwan3.ml3_member_$n" >/dev/null 2>&1 && return 1
+			[ "$(ml_member_occurrences "ml3_member_$n")" -eq 0 ] || return 1
+		fi
+		n=$((n + 1))
+	done
+	if [ "$ML_STATE_COUNT" -eq 0 ]; then uci -q get firewall.ml3_zone >/dev/null 2>&1 && return 1; fi
+	return 0
+}
+
+ml_network_transaction() {
+	local operation base count after generation journal
+	operation=$1
+	base=$2
+	count=$3
+	ml_network_status || {
+		ml_error manual_recovery 'network state requires manual recovery'
+		return
+	}
+	[ "$ML_NETWORK_RECOVERY" = 0 ] || {
+		ml_error recovery_required 'network recovery is required'
+		return
+	}
+	ml_verify_owned_plan || {
+		ml_error conflict 'owned configuration drift'
+		return
+	}
+	ml_verify_reserved_collisions || {
+		ml_error conflict 'reserved ownership collision'
+		return
+	}
+	if [ "$(uci -q get mwan3.balanced)" != policy ]; then
+		ml_error invalid_state 'balanced policy is required'
+		return
+	fi
+	# No legacy auto_* scan/adoption: collisions are checked only at the exact IDs.
+	if [ "$operation" = apply ]; then
+		for generation in $(seq 1 "$count"); do
+			if [ "$generation" -gt "$ML_STATE_COUNT" ] && { uci -q get "network.ml3_dev_$generation" >/dev/null || uci -q get "network.ml3_if_$generation" >/dev/null || uci -q get "mwan3.ml3_if_$generation" >/dev/null || uci -q get "mwan3.ml3_member_$generation" >/dev/null; }; then
+				ml_error conflict 'reserved ownership id exists'
+				return
+			fi
+		done
+	fi
+	generation=$((ML_STATE_GENERATION + 1))
+	after=$(ml_config_state_json "$generation" "$base" "$count")
+	journal="{\"schema\":1,\"operation\":\"$operation\",\"state\":\"prepared\",\"before\":$ML_STATE_JSON,\"after\":$after}"
+	ml_atomic_text "$ML_NET_JOURNAL" "$journal" || {
+		ml_error internal_error 'journal write failed'
+		return
+	}
+	ml_apply_plan "$ML_STATE_COUNT" "$count" "$base" && ml_uci_checked commit network && ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"network_committed"/')" && ml_uci_checked commit firewall && ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"firewall_committed"/')" && ml_uci_checked commit mwan3 && ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"mwan3_committed"/')" || {
+		ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"rollback_required"/')" || :
+		ml_apply_plan "$count" "$ML_STATE_COUNT" "$ML_STATE_BASE" && ml_uci_checked commit network && ml_uci_checked commit firewall && ml_uci_checked commit mwan3 || :
+		ml_error internal_error 'network transaction failed'
+		return
+	}
+	if ! /etc/init.d/network reload >/dev/null 2>&1 || ! /etc/init.d/firewall reload >/dev/null 2>&1 || ! /etc/init.d/mwan3 reload >/dev/null 2>&1; then
+		ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"rollback_required"/')" || :
+		ml_apply_plan "$count" "$ML_STATE_COUNT" "$ML_STATE_BASE" && ml_uci_checked commit network && ml_uci_checked commit firewall && ml_uci_checked commit mwan3 && /etc/init.d/network reload >/dev/null 2>&1 && /etc/init.d/firewall reload >/dev/null 2>&1 && /etc/init.d/mwan3 reload >/dev/null 2>&1 || :
+		ml_error internal_error 'network reload failed'
+		return
+	fi
+	ml_atomic_text "$ML_NET_JOURNAL" "$(printf '%s' "$journal" | sed 's/"prepared"/"services_reloaded"/')" || {
+		ml_error internal_error 'journal write failed'
+		return
+	}
+	ml_atomic_text "$ML_NET_STATE" "$after" && rm -f "$ML_NET_JOURNAL" || {
+		ml_error internal_error 'state commit failed'
+		return
+	}
+	ML_STATE_JSON=$after
+	ML_STATE_GENERATION=$generation
+	ML_STATE_BASE=$base
+	ML_STATE_COUNT=$count
+	ml_emit 1 ok ''
+	json_add_int generation "$generation"
+	[ "$operation" = apply ] && json_add_string base_iface "$base"
+	json_add_int count "$count"
+	json_add_array interfaces
+	ml_add_owned_interfaces
+	json_close_array
+	json_close_object
+	ml_network_legacy "$operation" "$base" "$count"
+	json_dump
+	printf '\n'
+}
+
+ml_quick_setup() {
+	ml_request_type base_iface string && ml_request_type count int || {
+		ml_error invalid_request 'invalid network types'
+		return
+	}
+	ml_req base_iface
+	ml_req count
+	ml_config_iface "$ML_base_iface" && ml_config_uint_range "$ML_count" 1 10 || {
+		ml_error invalid_request 'invalid network request'
+		return
+	}
+	ml_network_transaction apply "$ML_base_iface" "$ML_count"
+}
+ml_remove_auto() { ml_network_transaction remove '' 0; }
+
+ml_list_auto() {
+	ml_network_status || {
+		ml_error manual_recovery 'network state requires manual recovery'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_int generation "$ML_STATE_GENERATION"
+	json_add_string base_iface "$ML_STATE_BASE"
+	json_add_int count "$ML_STATE_COUNT"
+	json_add_array interfaces
+	ml_add_owned_interfaces
+	json_close_array
+	json_add_boolean recovery_required "$ML_NETWORK_RECOVERY"
+	json_close_object
+	json_add_string base_iface "$ML_STATE_BASE"
+	json_add_int count "$ML_STATE_COUNT"
+	json_add_array interfaces
+	ml_add_owned_interfaces
+	json_close_array
+	json_dump
+	printf '\n'
+}
+
+ml_network_recover() {
+	local decision selected
+	ml_state_parse "$ML_NET_STATE" || {
+		ml_error manual_recovery 'network state requires manual recovery'
+		return
+	}
+	ml_journal_parse || {
+		ml_error manual_recovery 'network journal requires manual recovery'
+		return
+	}
+	if [ "$ML_JOURNAL_PRESENT" = 0 ]; then
+		ml_emit 1 no_change ''
+		json_add_int generation "$ML_STATE_GENERATION"
+		json_add_boolean recovery_required 0
+		ml_finish
+		return
+	fi
+	decision=$(ml_config_journal_decision "$ML_JOURNAL_STATE" "$ML_STATE_JSON" "$ML_JOURNAL_BEFORE" "$ML_JOURNAL_AFTER")
+	case $decision in
+	cleanup_committed) rm -f "$ML_NET_JOURNAL" || {
+		ml_error internal_error 'journal cleanup failed'
+		return
+	} ;;
+	restore_before)
+		selected=$ML_JOURNAL_BEFORE
+		ml_state_parse_value "$selected" || {
+			ml_error manual_recovery 'network recovery requires manual repair'
+			return
+		}
+		ml_apply_plan "$ML_JOURNAL_AFTER_COUNT" "$ML_VALUE_COUNT" "$ML_VALUE_BASE" && ml_uci_checked commit network && ml_uci_checked commit firewall && ml_uci_checked commit mwan3 && /etc/init.d/network reload && /etc/init.d/firewall reload && /etc/init.d/mwan3 reload && ml_atomic_text "$ML_NET_STATE" "$selected" && rm -f "$ML_NET_JOURNAL" || {
+			ml_error manual_recovery 'network recovery requires manual repair'
+			return
+		}
+		;;
+	finish_after)
+		selected=$ML_JOURNAL_AFTER
+		ml_state_parse_value "$selected" || {
+			ml_error manual_recovery 'network recovery requires manual repair'
+			return
+		}
+		ml_apply_plan "$ML_JOURNAL_BEFORE_COUNT" "$ML_VALUE_COUNT" "$ML_VALUE_BASE" && ml_uci_checked commit network && ml_uci_checked commit firewall && ml_uci_checked commit mwan3 && /etc/init.d/network reload && /etc/init.d/firewall reload && /etc/init.d/mwan3 reload && ml_atomic_text "$ML_NET_STATE" "$selected" && rm -f "$ML_NET_JOURNAL" || {
+			ml_error manual_recovery 'network recovery requires manual repair'
+			return
+		}
+		;;
+	*)
+		ml_error manual_recovery 'network recovery requires manual repair'
+		return
+		;;
+	esac
+	ml_state_parse "$ML_NET_STATE" || {
+		ml_error manual_recovery 'network recovery requires manual repair'
+		return
+	}
+	ml_emit 1 ok ''
+	json_add_int generation "$ML_STATE_GENERATION"
+	json_add_boolean recovery_required 0
+	ml_finish
+}
+
+ml_get_diagnostics() {
+	local size present script_recovery
+	ml_network_status || :
+	present=0
+	size=0
+	if [ -e "$ML_LOG" ] && [ ! -L "$ML_LOG" ] && [ -f "$ML_LOG" ]; then
+		present=1
+		size=$(stat -c %s "$ML_LOG" 2>/dev/null || printf 0)
+	fi
+	if [ -e /etc/multilogin/.script-state/activation.journal ] || [ -L /etc/multilogin/.script-state/activation.journal ]; then script_recovery=1; else script_recovery=0; fi
+	ml_emit 1 ok ''
+	json_add_object dependencies
+	command -v bash >/dev/null 2>&1 && json_add_boolean bash 1 || json_add_boolean bash 0
+	command -v curl >/dev/null 2>&1 && json_add_boolean curl 1 || json_add_boolean curl 0
+	command -v mwan3 >/dev/null 2>&1 && json_add_boolean mwan3 1 || json_add_boolean mwan3 0
+	command -v jsonfilter >/dev/null 2>&1 && json_add_boolean jsonfilter 1 || json_add_boolean jsonfilter 0
+	json_close_object
+	json_add_object service
+	ml_emit_service
+	json_close_object
+	json_add_object log
+	json_add_boolean present "$present"
+	json_add_int size "$size"
+	json_close_object
+	json_add_boolean script_recovery_required "$script_recovery"
+	json_add_boolean network_recovery_required "$ML_NETWORK_RECOVERY"
+	if [ "$ML_NETWORK_VALID" = 1 ]; then json_add_int owned_generation "$ML_STATE_GENERATION"; else json_add_null owned_generation; fi
+	ml_finish
+}
+
+ml_dispatch() {
+	local method fields
+	method=$1
+	case $method in save_account | delete_account | save_instance | delete_instance | quick_setup | list_auto | remove_auto) ML_COMPAT_ERROR=1 ;; *) ML_COMPAT_ERROR=0 ;; esac
+	fields=$(ml_config_request_fields "$method" "$ML_REQUEST_KEYS")
+	[ "$fields" = ok ] || {
+		ml_error invalid_request 'invalid request fields'
+		return
+	}
+	case $method in
+	get_overview)
+		ml_emit 1 ok ''
+		ml_get_overview
+		ml_finish
+		;;
+	get_settings)
+		ml_emit 1 ok ''
+		ml_get_settings
+		ml_finish
+		;;
+	save_settings)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_save_settings
+		;;
+	list_accounts) ml_list_accounts ;;
+	save_account)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_save_account
+		;;
+	delete_account)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_delete_account
+		;;
+	list_instances) ml_list_instances ;;
+	save_instance)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_save_instance
+		;;
+	delete_instance)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_delete_instance
+		;;
+	service_status) ml_service_status ;;
+	service_action) ml_service_action ;;
+	get_diagnostics) ml_get_diagnostics ;;
+	get_logs) ml_get_logs ;;
+	clear_logs)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_clear_logs
+		;;
+	quick_setup)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_quick_setup
+		;;
+	list_auto) ml_list_auto ;;
+	remove_auto)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_remove_auto
+		;;
+	network_recover)
+		ml_lock || {
+			ml_error internal_error 'lock unavailable'
+			return
+		}
+		ml_network_recover
+		;;
+	esac
+}
+
+case ${1:-} in
+rpc)
+	[ "$#" -eq 2 ] || {
+		ml_error invalid_request 'invalid request'
+		exit 1
+	}
+	ml_parse_request || {
+		ml_error invalid_request 'invalid JSON'
+		exit 0
+	}
+	ml_dispatch "$2"
+	;;
+cli)
+	[ "$#" -eq 4 ] && [ "$2" = quick_setup ] && ml_config_iface "$3" && ml_config_uint_range "$4" 1 10 || {
+		ml_error invalid_request 'usage: quick_setup <base_interface> <count>'
+		exit 1
+	}
+	response=$(printf '{"base_iface":"%s","count":%s}' "$3" "$4" | "$0" rpc quick_setup) || exit 1
+	printf '%s\n' "$response"
+	[ "$(printf '%s' "$response" | jsonfilter -e '@.ok' 2>/dev/null)" = true ] && exit 0
+	exit 1
+	;;
+recover)
+	[ "$#" -eq 1 ] || exit 1
+	ml_lock || exit 1
+	ml_state_parse "$ML_NET_STATE" && ml_journal_parse && { [ "$ML_JOURNAL_PRESENT" = 0 ] || ml_network_recover >/dev/null; } || exit 1
+	;;
+*)
+	ml_error invalid_request 'unsupported action'
+	exit 1
+	;;
+esac

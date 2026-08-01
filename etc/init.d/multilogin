@@ -13,6 +13,10 @@ start_service() {
 		logger -t multilogin "script recovery is required; refusing controller start"
 		return 1
 	fi
+	if ! /usr/libexec/multilogin-config recover; then
+		logger -t multilogin "network recovery is required; refusing controller start"
+		return 1
+	fi
 	config_load multilogin
 	config_get enabled global enabled 0
 
