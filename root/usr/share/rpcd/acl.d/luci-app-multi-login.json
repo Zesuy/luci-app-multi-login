@@ -9,7 +9,6 @@
                 "mwan3"
             ],
             "file": [
-                "/etc/multilogin/*",
                 "/var/log/multilogin.log"
             ],
             "ubus": {
@@ -23,7 +22,10 @@
                     "list_auto",
                     "check_instance",
                     "test_instance",
-                    "logout_instance"
+                    "logout_instance",
+                    "script_info",
+                    "script_check",
+                    "script_get_draft"
                 ]
             }
         },
@@ -34,18 +36,9 @@
                 "firewall",
                 "mwan3"
             ],
-            "file": [
-                "/etc/multilogin/login.sh",
-                "/etc/multilogin/login_A.sh",
-                "/etc/multilogin/login_huxi.sh"
-            ],
             "ubus": {
                 "luci": [
                     "setInitAction"
-                ],
-                "file": [
-                    "write",
-                    "read"
                 ],
                 "multilogin": [
                     "quick_setup",
@@ -54,7 +47,14 @@
                     "delete_instance",
                     "logout_instance",
                     "save_account",
-                    "delete_account"
+                    "delete_account",
+                    "script_stage",
+                    "script_validate",
+                    "script_activate",
+                    "script_rollback",
+                    "script_restore",
+                    "script_save_draft",
+                    "script_discard_draft"
                 ]
             }
         }

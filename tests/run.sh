@@ -211,5 +211,7 @@ node "$TEST_DIR/test-phase4-logic.mjs"
 pass 'Phase 4 static and pure wrapper logic suite'
 node "$TEST_DIR/test-phase5-logic.mjs"
 pass 'Phase 5 static and pure policy logic suite'
+node "$TEST_DIR/test-phase6-static.mjs"
+pass 'Phase 6 static and extracted pure UI logic suite'
 
 printf '\n%d checks passed; %d optional tooling checks skipped.\n' "$PASS_COUNT" "$SKIP_COUNT"
