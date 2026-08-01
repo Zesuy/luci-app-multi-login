@@ -1,0 +1,165 @@
+name: Reusable OpenWrt SDK build
+
+on:
+  workflow_call:
+    inputs:
+      sdk_version:
+        description: Official OpenWrt SDK release version.
+        required: true
+        type: string
+      sdk_url:
+        description: HTTPS URL of the official SDK archive.
+        required: true
+        type: string
+      sdk_sha256:
+        description: SHA-256 from the matching official sha256sums file.
+        required: true
+        type: string
+      sdk_archive_extension:
+        description: Archive suffix accepted by tar on the runner.
+        required: true
+        type: string
+      feed_branch:
+        description: OpenWrt feed branch matching the SDK release line.
+        required: true
+        type: string
+      artifact_name:
+        description: Deterministic build-output artifact name.
+        required: true
+        type: string
+      release_style:
+        description: OpenWrt package release marker style (plain or r).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile ${{ inputs.sdk_version }} x86_64 witness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore verified SDK archive
+        id: sdk-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}
+          key: openwrt-sdk-${{ runner.os }}-x86-64-${{ inputs.sdk_version }}-${{ inputs.sdk_sha256 }}
+
+      - name: Install bounded host build tooling
+        run: |
+          timeout 120s sudo apt-get update
+          timeout 180s sudo apt-get install --no-install-recommends \
+            build-essential \
+            file \
+            gawk \
+            gettext \
+            git \
+            libncurses-dev \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zstd
+
+      - name: Download and verify official SDK
+        env:
+          SDK_URL: ${{ inputs.sdk_url }}
+          SDK_SHA256: ${{ inputs.sdk_sha256 }}
+        run: |
+          set -eu
+          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}"
+          case "$SDK_URL" in
+            https://downloads.openwrt.org/releases/*) ;;
+            *) echo 'SDK URL must use the official OpenWrt releases host' >&2; exit 1 ;;
+          esac
+          case "$SDK_SHA256" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo 'SDK checksum must be lowercase SHA-256' >&2; exit 1 ;;
+          esac
+          if [ ! -f "$SDK_ARCHIVE" ]; then
+            curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+              --retry 2 --retry-all-errors --connect-timeout 15 --max-time 300 \
+              --max-filesize 400M "$SDK_URL" --output "$SDK_ARCHIVE"
+          fi
+          printf '%s  %s\n' "$SDK_SHA256" "$SDK_ARCHIVE" | sha256sum --check --status
+
+      - name: Extract verified SDK
+        run: |
+          set -eu
+          SDK_ARCHIVE="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}${{ inputs.sdk_archive_extension }}"
+          SDK_ROOT="$RUNNER_TEMP/multilogin-sdk-${{ inputs.sdk_version }}"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          tar --extract --file "$SDK_ARCHIVE" --directory "$SDK_ROOT" --strip-components=1
+          test -x "$SDK_ROOT/scripts/feeds"
+          test -f "$SDK_ROOT/include/toplevel.mk"
+
+      - name: Integrate required OpenWrt package feeds
+        env:
+          FEED_BRANCH: ${{ inputs.feed_branch }}
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+        run: |
+          set -eu
+          case "$FEED_BRANCH" in
+            openwrt-23.05 | openwrt-24.10) ;;
+            *) echo 'unsupported OpenWrt feed branch' >&2; exit 1 ;;
+          esac
+          sed -i \
+            -e "s#;openwrt-[0-9.][0-9.]*#;$FEED_BRANCH#g" \
+            feeds.conf.default
+          timeout 180s ./scripts/feeds update packages luci routing
+          timeout 120s ./scripts/feeds install -p packages bash curl jsonfilter
+          timeout 120s ./scripts/feeds install -p luci luci-base
+          timeout 120s ./scripts/feeds install -p routing mwan3
+
+      - name: Add package feed and compile
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+        run: |
+          set -eu
+          umask 022
+          mkdir -p package/multilogin
+          ln -s "$GITHUB_WORKSPACE" package/multilogin/luci-app-multilogin
+          timeout 120s make defconfig
+          timeout 900s make package/luci-app-multilogin/compile V=s
+
+      - name: Stage IPK build output and checksum
+        id: artifact
+        env:
+          RELEASE_STYLE: ${{ inputs.release_style }}
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ inputs.sdk_version }}
+        run: |
+          set -eu
+          case "$RELEASE_STYLE" in plain | r) ;; *) exit 1 ;; esac
+          set -- $(find bin/packages -type f -name 'luci-app-multilogin_*.ipk' -print | LC_ALL=C sort)
+          test "$#" -eq 1
+          mkdir artifact
+          cp "$1" artifact/
+          (
+            cd artifact
+            sha256sum "$(basename "$1")" >sha256sums.txt
+          )
+          RELEASE_TAG="v$(sed -n 's/^PKG_VERSION:=//p' "$GITHUB_WORKSPACE/Makefile")"
+          sh "$GITHUB_WORKSPACE/tools/release/inspect-artifact.sh" \
+            --ipk "$PWD/artifact/$(basename "$1")" \
+            --checksums "$PWD/artifact/sha256sums.txt" \
+            --tag "$RELEASE_TAG" \
+            --release-style "$RELEASE_STYLE"
+          printf 'artifact_path=%s\n' "$PWD/artifact" >>"$GITHUB_OUTPUT"
+
+      - name: Upload IPK build output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ steps.artifact.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7

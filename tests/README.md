@@ -36,3 +36,9 @@ envelopes, write-only account responses, redaction predicates, token/request
 validation, deterministic ownership plans and journal decisions, ACL/menu
 negative grants, and credential-free product documentation. They do not invoke
 rpcd, UCI, services, network commands, browsers, or a router filesystem.
+
+Phase 8 adds pinned-workflow and release-metadata checks, a pure change-scope
+matrix, and a shell-only gate that requires a newer SemVer without changing
+script API 3. Read-only prepared IPK fixtures enforce the exact dependency and
+payload manifests, file modes, release-line filename, and checksum, including
+negative extra-file/dependency cases; they are never installed or executed.

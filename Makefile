@@ -1,8 +1,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
-PKG_VERSION:=2.2.0
-PKG_RELEASE:=4
+# Keep the SemVer prerelease in PKG_VERSION and use release 1 for the first
+# build of this candidate. OpenWrt 23.05 encodes it as 3.0.0-rc.1-1, while
+# OpenWrt 24.10 encodes the same release value as 3.0.0-rc.1-r1.
+PKG_VERSION:=3.0.0-rc.1
+PKG_RELEASE:=1
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 

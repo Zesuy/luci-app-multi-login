@@ -12,10 +12,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: Classify changed paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      base_sha: ${{ steps.classify.outputs.base_sha }}
+      scope: ${{ steps.classify.outputs.scope }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify release scope
+        id: classify
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          set -eu
+          if [ -n "$PR_BASE_SHA" ]; then
+            BASE_SHA=$PR_BASE_SHA
+          elif [ -n "$PUSH_BASE_SHA" ] && [ "$PUSH_BASE_SHA" != 0000000000000000000000000000000000000000 ]; then
+            BASE_SHA=$PUSH_BASE_SHA
+          else
+            BASE_SHA=$(git merge-base "$GITHUB_SHA" "origin/$DEFAULT_BRANCH")
+          fi
+          git cat-file -e "$BASE_SHA^{commit}"
+          git diff --name-only "$BASE_SHA" "$GITHUB_SHA" >changed-paths.txt
+          node tools/release/change-scope.mjs --paths-file changed-paths.txt >scope.json
+          SCOPE=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('scope.json', 'utf8')).scope)")
+          printf 'base_sha=%s\n' "$BASE_SHA" >>"$GITHUB_OUTPUT"
+          printf 'scope=%s\n' "$SCOPE" >>"$GITHUB_OUTPUT"
+
   test:
     name: Offline test suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     env:
       CI: "1"
       MULTILOGIN_REQUIRE_TOOLING: "1"
@@ -28,8 +64,8 @@ jobs:
 
       - name: Install test tooling
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends \
+          timeout 120s sudo apt-get update
+          timeout 120s sudo apt-get install --no-install-recommends \
             busybox \
             jq \
             nodejs \
@@ -38,4 +74,57 @@ jobs:
             shfmt
 
       - name: Run offline tests
-        run: ./tests/run.sh
+        run: timeout 60s ./tests/run.sh
+
+  sdk-build:
+    name: SDK ${{ matrix.sdk_version }} x86_64
+    needs: [scope, test]
+    if: needs.scope.outputs.scope == 'package'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk_version: 23.05.6
+            sdk_url: https://downloads.openwrt.org/releases/23.05.6/targets/x86/64/openwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk_sha256: f22bdac5b702bb823a0ee802e9bbda2a56c0f7a2687e5090113b00910dac995f
+            sdk_archive_extension: .tar.xz
+            feed_branch: openwrt-23.05
+            artifact_name: luci-app-multilogin-openwrt-23.05.6-x86-64
+            release_style: plain
+          - sdk_version: 24.10.8
+            sdk_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: ac4a0405d2eea821b06f93c14ba13ffa90ad0457648903df7dde02570027ab21
+            sdk_archive_extension: .tar.zst
+            feed_branch: openwrt-24.10
+            artifact_name: luci-app-multilogin-openwrt-24.10.8-x86-64
+            release_style: r
+    uses: ./.github/workflows/sdk-build.yml
+    with:
+      sdk_version: ${{ matrix.sdk_version }}
+      sdk_url: ${{ matrix.sdk_url }}
+      sdk_sha256: ${{ matrix.sdk_sha256 }}
+      sdk_archive_extension: ${{ matrix.sdk_archive_extension }}
+      feed_branch: ${{ matrix.feed_branch }}
+      artifact_name: ${{ matrix.artifact_name }}
+      release_style: ${{ matrix.release_style }}
+
+  shell-only:
+    name: Shell-only version gate
+    needs: [scope, test]
+    if: needs.scope.outputs.scope == 'shell-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a compatible script version increase
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base_sha }}
+        run: |
+          git show "$BASE_SHA:etc/multilogin/cqu-portal.sh" >"$RUNNER_TEMP/base-cqu-portal.sh"
+          node tools/release/change-scope.mjs --path etc/multilogin/cqu-portal.sh --require shell-only
+          node tools/release/script-version.mjs --base-script "$RUNNER_TEMP/base-cqu-portal.sh"
