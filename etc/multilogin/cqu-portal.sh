@@ -970,7 +970,7 @@ run_login() {
 	if ! request_login; then
 		case $PORTAL_ERROR_KIND in
 		encoding) fail_exit 7 encoding_error encoding '{}' ;;
-		internal) fail_exit 3 protocol_error internal '{}' ;;
+		internal) fail_exit 3 internal_error internal '{}' ;;
 		*) fail_exit 3 transport_error transport '{}' ;;
 		esac
 	fi

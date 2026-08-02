@@ -476,8 +476,22 @@ load_settings() {
 }
 
 load_instances() {
-	local section instance_enabled interface v6face ua_type account_ref username password
+	local section instance_enabled interface v6face ua_type account_ref username password sections
 	local index=0
+
+	# The ordinary UCI listing renders legacy anonymous sections as
+	# @instance[index], which is not a durable token and is rejected below.
+	# Capture only the filtered section names (never the full, secret-bearing
+	# listing) while using -X so generated names remain addressable.
+	sections=$(
+		set -o pipefail
+		uci -q -X show multilogin 2>/dev/null |
+			sed -n 's/^multilogin\.\([A-Za-z_][A-Za-z0-9_]*\)=instance$/\1/p' |
+			LC_ALL=C sort -u
+	) || {
+		log error 'Unable to enumerate MultiLogin instances; controller is stopping.'
+		return 1
+	}
 
 	while IFS= read -r section; do
 		[[ -n $section ]] || continue
@@ -521,7 +535,8 @@ load_instances() {
 		password=''
 		log info "Loaded instance #$index: Interface=$interface, IPv6_IF=${v6face:-none}, UA=$ua_type."
 		index=$((index + 1))
-	done < <(uci show multilogin 2>/dev/null | awk -F'[.=]' '$3 == "instance" {print $2}' | LC_ALL=C sort -u)
+	done <<<"$sections"
+	sections=''
 }
 
 interface_line_for() {
@@ -617,7 +632,7 @@ main() {
 	fi
 
 	load_settings
-	load_instances
+	load_instances || return 1
 	if ((${#INSTANCE_INTERFACES[@]} == 0)); then
 		log warning 'No enabled valid login instances; daemon is idle.'
 	else

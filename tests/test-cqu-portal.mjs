@@ -256,6 +256,9 @@ function offline() {
 }
 
 function syntaxAndMetadataTests() {
+  const portalSource = fs.readFileSync(script, 'utf8');
+  assert(portalSource.includes('internal) fail_exit 3 internal_error internal'), 'login local failures do not emit the internal_error/internal contract pair');
+  assert(!portalSource.includes('internal) fail_exit 3 protocol_error internal'), 'login local failures are mislabeled as protocol_error/internal');
   for (const action of ['version', 'self-test']) {
     const harness = createHarness(action);
     const result = invoke(harness, [action]);
@@ -355,6 +358,28 @@ function statusTests() {
   result = invoke(harness, ['status', '--mwan3', 'wan-test']);
   envelope(result, 7, 'status', 'encoding_error', 'encoding');
   assertNoNetwork(harness, 'missing Base64 capability');
+
+  harness = createHarness('status-local-failure', { restrictedPath: true });
+  const failingBin = path.join(harness.scenario, 'failing-bin');
+  const chmodCount = path.join(harness.state, 'chmod.count');
+  const failingChmod = path.join(failingBin, 'chmod');
+  fs.mkdirSync(failingBin);
+  fs.symlinkSync('/usr/bin/base64', path.join(failingBin, 'base64'));
+  fs.writeFileSync(failingChmod, [
+    '#!/bin/sh',
+    'count=0',
+    `[ -f '${chmodCount}' ] && count=$(/bin/cat '${chmodCount}')`,
+    'count=$((count + 1))',
+    `printf '%s\\n' "$count" >'${chmodCount}'`,
+    '[ "$count" -ge 2 ] && exit 1',
+    'exec /bin/chmod "$@"',
+    '',
+  ].join('\n'), { mode: 0o700 });
+  fs.chmodSync(failingChmod, 0o700);
+  harness.env.PATH = `${failingBin}:${harness.env.PATH}`;
+  result = invoke(harness, ['status', '--mwan3', 'wan-test']);
+  envelope(result, 3, 'status', 'internal_error', 'internal');
+  assertNoNetwork(harness, 'local temporary-file failure');
   pass('status handles offline, both classifications, malformed, transport, dependency, interface, and Base64 failures');
 
   harness = createHarness('status-ipv6');
@@ -466,6 +491,7 @@ function loginTests() {
   });
   envelope(result, 3, 'login', 'protocol_error', 'protocol');
   equal(callDirectories(harness, 'sleep').length, 4, 'login polling is bounded to five attempts');
+
   pass('login covers PC/mobile success, secret config, auth, existing state, mismatch, and bounded confirmation');
 }
 

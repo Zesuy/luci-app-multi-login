@@ -1,0 +1,11 @@
+.other
+.gitignore
+.sdk
+.sdk-tools
+.codegraph
+/dev/plan/
+
+# Local Playwright tooling is intentionally not part of the package source.
+/node_modules/
+/package.json
+/package-lock.json

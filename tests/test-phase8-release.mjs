@@ -166,6 +166,13 @@ function sdkMatrixTests() {
 }
 
 function metadataTests() {
+  const changelogSource = read('CHANGELOG.md');
+  const deviceAcceptanceSource = read('docs/v3/rc-device-acceptance.md');
+  assert.match(changelogSource, new RegExp(`3\\.0\\.0-rc\\.1-r${packageRelease}`), 'CHANGELOG candidate revision is stale');
+  assert.match(deviceAcceptanceSource, new RegExp(`3\\.0\\.0-rc\\.1-r${packageRelease}`), 'device acceptance IPK revision is stale');
+  assert.match(deviceAcceptanceSource, new RegExp(`3\\.0\\.0_rc1-r${packageRelease}`), 'device acceptance APK revision is stale');
+  const staleCandidate = new RegExp(`3\\.0\\.0-rc\\.1-r(?!${packageRelease}(?:\\D|$))\\d+|3\\.0\\.0_rc1-r(?!${packageRelease}(?:\\D|$))\\d+`);
+  assert.doesNotMatch(deviceAcceptanceSource, staleCandidate, 'device acceptance still names an obsolete candidate');
   const releaseRepository = path.join(temporary, 'release-repository');
   write('release-repository/Makefile', 'PKG_SOURCE_VERSION:=3.0.0-rc.1\nPKG_APK_VERSION:=3.0.0_rc1\nPKG_RELEASE:=1\n');
   write('release-repository/etc/multilogin/cqu-portal.sh', "MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.1'\nMULTILOGIN_SCRIPT_API=3\n");
