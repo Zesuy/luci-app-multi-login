@@ -330,8 +330,125 @@ ml_uci_quote() {
 ml_section_type() { uci -q get "multilogin.$1" 2>/dev/null; }
 
 ml_collect_sections() {
+	local listing type status
+	type=$1
 	# Names are read from trusted UCI output, then revalidated before use.
-	uci -q show multilogin 2>/dev/null | sed -n "s/^multilogin\\.\\([A-Za-z_][A-Za-z0-9_]*\\)=\('$2'\|$2\)$/\\1/p" | LC_ALL=C sort -u
+	# Disable UCI's @type[index] extended syntax so generated names are
+	# emitted for anonymous sections.  The ordinary form renders those
+	# expressions, which cannot be passed through the token validator or used
+	# for stable cross-call references.
+	listing=$(uci -q -X show multilogin 2>/dev/null) || return 1
+	printf '%s\n' "$listing" | sed -n "s/^multilogin\\.\\([A-Za-z_][A-Za-z0-9_]*\\)=\\('$type'\\|$type\\)$/\\1/p" | LC_ALL=C sort -u
+	status=$?
+	listing=''
+	return "$status"
+}
+
+ml_next_section_name() {
+	local type candidate number
+	type=$1
+	case $type in account | instance) ;; *) return 1 ;; esac
+	number=1
+	while [ "$number" -le 100000 ]; do
+		candidate="${type}_${number}"
+		if ! uci -q get "multilogin.$candidate" >/dev/null 2>&1; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+		number=$((number + 1))
+	done
+	return 1
+}
+
+ml_section_is_anonymous() {
+	local section type extended standard ordinal standard_name status
+	section=$1
+	type=$2
+	# A generated UCI section name has the same token grammar as a user-chosen
+	# name (for example, cfg_custom).  Do not infer anonymity from the cfg
+	# prefix: compare the extended and ordinary package listings by section
+	# order.  The ordinary listing uses @type[index] only for anonymous
+	# sections, while -X exposes their generated names.
+	ml_config_token "$section" || return 2
+	case $type in account | instance) ;; *) return 2 ;; esac
+	extended=$(uci -q -X show multilogin 2>/dev/null) || return 2
+	standard=$(uci -q show multilogin 2>/dev/null) || {
+		extended=''
+		return 2
+	}
+	ordinal=$(printf '%s\n' "$extended" | awk -v wanted="$section" -v wanted_type="$type" '
+		$0 !~ /^multilogin\.[A-Za-z_][A-Za-z0-9_]*=(account|instance)$/ { next }
+		name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
+		kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
+		if (kind != wanted_type) next
+		count++
+		if (name == wanted) { print count; found=1; exit }
+		END { if (!found) exit 1 }
+	') || {
+		extended=''
+		standard=''
+		return 2
+	}
+	standard_name=$(printf '%s\n' "$standard" | awk -v wanted_type="$type" -v wanted_ordinal="$ordinal" '
+		$0 !~ /^multilogin\.(@(account|instance)\[[0-9]+\]|[A-Za-z_][A-Za-z0-9_]*)=(account|instance)$/ { next }
+		name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
+		kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
+		if (kind != wanted_type) next
+		count++
+		if (count == wanted_ordinal) { print name; found=1; exit }
+		END { if (!found) exit 1 }
+	') || {
+		extended=''
+		standard=''
+		ordinal=''
+		return 2
+	}
+	extended=''
+	standard=''
+	ordinal=''
+	case $standard_name in
+	"@$type["*"]") status=0 ;;
+	"$section") status=1 ;;
+	*) status=2 ;;
+	esac
+	standard_name=''
+	return "$status"
+}
+
+ml_normalize_section() {
+	local section type target reference normalized_reference refs normalized_refs reference_account status
+	section=$1
+	type=$2
+	ML_NORMALIZED_SECTION=$section
+	ML_NORMALIZED_CHANGED=0
+	ml_section_is_anonymous "$section" "$type"
+	status=$?
+	[ "$status" -eq 1 ] && return 0
+	[ "$status" -eq 0 ] || return 1
+	normalized_refs=''
+	# Name every anonymous instance that points at this account before the
+	# account reference is rewritten.  Otherwise its generated ID can change
+	# during reload and leave a durable link to a stale section name.
+	if [ "$type" = account ]; then
+		refs=$(ml_collect_sections instance) || return 1
+		for reference in $refs; do
+			ml_config_token "$reference" || continue
+			reference_account=$(uci -q get "multilogin.$reference.account" 2>/dev/null) || return 1
+			[ "$reference_account" = "$section" ] || continue
+			ml_normalize_section "$reference" instance || return 1
+			normalized_reference=$ML_NORMALIZED_SECTION
+			normalized_refs="$normalized_refs${normalized_refs:+ }$normalized_reference"
+		done
+	fi
+	target=$(ml_next_section_name "$type") || return 1
+	uci rename "multilogin.$section=$target" || return 1
+	if [ "$type" = account ]; then
+		for normalized_reference in $normalized_refs; do
+			uci set "multilogin.$normalized_reference.account=$target" || return 1
+		done
+	fi
+	ML_NORMALIZED_SECTION=$target
+	ML_NORMALIZED_CHANGED=1
 }
 
 ml_emit_service() {
@@ -363,14 +480,16 @@ ml_get_settings() {
 }
 
 ml_get_overview() {
-	local settings accounts instances enabled_instances
+	local settings accounts instances enabled_instances account_sections instance_sections section
 	ml_network_status || :
 	settings=$(uci -q get multilogin.global.enabled)
 	ml_config_boolean "$settings" || settings=0
-	accounts=$(ml_collect_sections account | grep -c . || :)
-	instances=$(ml_collect_sections instance | grep -c . || :)
+	account_sections=$(ml_collect_sections account) || return 1
+	instance_sections=$(ml_collect_sections instance) || return 1
+	accounts=$(printf '%s\n' "$account_sections" | grep -c . || :)
+	instances=$(printf '%s\n' "$instance_sections" | grep -c . || :)
 	enabled_instances=0
-	for section in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$section.enabled")" = 1 ] && enabled_instances=$((enabled_instances + 1)); done
+	for section in $instance_sections; do [ "$(uci -q get "multilogin.$section.enabled")" = 1 ] && enabled_instances=$((enabled_instances + 1)); done
 	json_add_boolean settings_enabled "$settings"
 	json_add_boolean service_enabled "$(ml_service_enabled && printf 1 || printf 0)"
 	json_add_boolean service_running "$(ml_service_running && printf 1 || printf 0)"
@@ -415,16 +534,24 @@ ml_save_settings() {
 }
 
 ml_list_accounts() {
-	local section alias username password references count
+	local sections instance_sections section alias username password references count
+	sections=$(ml_collect_sections account) || {
+		ml_error internal_error 'configuration read failed'
+		return
+	}
+	instance_sections=$(ml_collect_sections instance) || {
+		ml_error internal_error 'configuration read failed'
+		return
+	}
 	ml_emit 1 ok ''
 	json_add_array accounts
-	for section in $(ml_collect_sections account); do
+	for section in $sections; do
 		ml_config_token "$section" || continue
 		alias=$(uci -q get "multilogin.$section.alias")
 		username=$(uci -q get "multilogin.$section.username")
 		password=$(uci -q get "multilogin.$section.password")
 		count=0
-		for references in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$references.account")" = "$section" ] && count=$((count + 1)); done
+		for references in $instance_sections; do [ "$(uci -q get "multilogin.$references.account")" = "$section" ] && count=$((count + 1)); done
 		json_add_object ''
 		json_add_string section "$section"
 		json_add_string alias "$alias"
@@ -461,17 +588,19 @@ ml_save_account() {
 		ml_error invalid_request 'password is required'
 		return
 	}
-	if [ -n "$section" ]; then ml_config_token "$section" && [ "$(ml_section_type "$section")" = account ] || {
-		ml_error not_found 'account not found'
+	if [ -n "$section" ]; then
+		ml_config_token "$section" && [ "$(ml_section_type "$section")" = account ] || {
+			ml_error not_found 'account not found'
 		return
-	}; else
-		section=$(uci add multilogin account 2>/dev/null) || {
+		}
+	else
+		section=$(ml_next_section_name account) || {
 			ml_error internal_error 'configuration write failed'
 			return
 		}
-		ml_config_token "$section" || {
+		uci set "multilogin.$section=account" || {
 			uci revert multilogin >/dev/null 2>&1 || :
-			ml_error internal_error 'invalid generated section'
+			ml_error internal_error 'configuration write failed'
 			return
 		}
 		created=1
@@ -481,6 +610,14 @@ ml_save_account() {
 		uci revert multilogin >/dev/null 2>&1 || :
 		ml_error invalid_request 'password is required'
 		return
+	fi
+	if [ "$created" = 0 ]; then
+		ml_normalize_section "$section" account || {
+			uci revert multilogin >/dev/null 2>&1 || :
+			ml_error internal_error 'configuration write failed'
+			return
+		}
+		section=$ML_NORMALIZED_SECTION
 	fi
 	{
 		printf 'set multilogin.%s.alias=%s\n' "$section" "$(ml_uci_quote "$alias")"
@@ -505,7 +642,7 @@ ml_save_account() {
 }
 
 ml_delete_account() {
-	local section reference refs
+	local section reference refs references
 	ml_request_type section string || {
 		ml_error invalid_request 'invalid account types'
 		return
@@ -517,7 +654,11 @@ ml_delete_account() {
 		return
 	}
 	refs=''
-	for reference in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$reference.account")" = "$section" ] && refs="$refs $reference"; done
+	references=$(ml_collect_sections instance) || {
+		ml_error internal_error 'configuration read failed'
+		return
+	}
+	for reference in $references; do [ "$(uci -q get "multilogin.$reference.account")" = "$section" ] && refs="$refs $reference"; done
 	if [ -n "$refs" ]; then
 		ml_emit 0 conflict 'account is referenced'
 		json_add_array references
@@ -537,10 +678,14 @@ ml_delete_account() {
 }
 
 ml_list_instances() {
-	local section enabled alias interface v6face account account_label ua iface_list
+	local sections section enabled alias interface v6face account account_label ua iface_list
+	sections=$(ml_collect_sections instance) || {
+		ml_error internal_error 'configuration read failed'
+		return
+	}
 	ml_emit 1 ok ''
 	json_add_array instances
-	for section in $(ml_collect_sections instance); do
+	for section in $sections; do
 		ml_config_token "$section" || continue
 		enabled=$(uci -q get "multilogin.$section.enabled")
 		ml_config_boolean "$enabled" || enabled=0
@@ -574,7 +719,7 @@ ml_list_instances() {
 }
 
 ml_save_instance() {
-	local section enabled alias interface v6face account ua created
+	local section enabled alias interface v6face account ua created normalized_changed
 	ml_request_type section string && ml_request_type enabled string && ml_request_type alias string && ml_request_type interface string && ml_request_type v6face string && ml_request_type account string && ml_request_type ua_type string || {
 		ml_error invalid_request 'invalid instance types'
 		return
@@ -594,26 +739,47 @@ ml_save_instance() {
 	account=$ML_account
 	ua=$ML_ua_type
 	created=0
+	normalized_changed=0
 	ml_config_boolean "$enabled" && ml_valid_text "$alias" 128 && ml_config_iface "$interface" && { [ -z "$v6face" ] || ml_config_iface "$v6face"; } && ml_config_token "$account" && [ "$(ml_section_type "$account")" = account ] && ml_config_ua_type "$ua" || {
 		ml_error invalid_request 'invalid instance'
 		return
 	}
-	if [ -n "$section" ]; then ml_config_token "$section" && [ "$(ml_section_type "$section")" = instance ] || {
-		ml_error not_found 'instance not found'
-		return
-	}; else
-		section=$(uci add multilogin instance 2>/dev/null) || {
+	if [ -n "$section" ]; then
+		ml_config_token "$section" && [ "$(ml_section_type "$section")" = instance ] || {
+			uci revert multilogin >/dev/null 2>&1 || :
+			ml_error not_found 'instance not found'
+			return
+		}
+		ml_normalize_section "$section" instance || {
+			uci revert multilogin >/dev/null 2>&1 || :
 			ml_error internal_error 'configuration write failed'
 			return
 		}
-		ml_config_token "$section" || {
+		section=$ML_NORMALIZED_SECTION
+		[ "$ML_NORMALIZED_CHANGED" = 1 ] && normalized_changed=1
+	else
+		section=$(ml_next_section_name instance) || {
 			uci revert multilogin >/dev/null 2>&1 || :
-			ml_error internal_error 'invalid generated section'
+			ml_error internal_error 'configuration write failed'
 			return
 		}
 		created=1
 	fi
-	if [ "$created" = 0 ] && [ "$(uci -q get "multilogin.$section.enabled")" = "$enabled" ] && [ "$(uci -q get "multilogin.$section.alias")" = "$alias" ] && [ "$(uci -q get "multilogin.$section.interface")" = "$interface" ] && [ "$(uci -q get "multilogin.$section.v6face")" = "$v6face" ] && [ "$(uci -q get "multilogin.$section.account")" = "$account" ] && [ "$(uci -q get "multilogin.$section.ua_type")" = "$ua" ]; then
+	ml_normalize_section "$account" account || {
+		uci revert multilogin >/dev/null 2>&1 || :
+		ml_error internal_error 'configuration write failed'
+		return
+	}
+	account=$ML_NORMALIZED_SECTION
+	[ "$ML_NORMALIZED_CHANGED" = 1 ] && normalized_changed=1
+	if [ "$created" = 1 ]; then
+		uci set "multilogin.$section=instance" || {
+			uci revert multilogin >/dev/null 2>&1 || :
+			ml_error internal_error 'configuration write failed'
+			return
+		}
+	fi
+	if [ "$created" = 0 ] && [ "$normalized_changed" != 1 ] && [ "$(uci -q get "multilogin.$section.enabled")" = "$enabled" ] && [ "$(uci -q get "multilogin.$section.alias")" = "$alias" ] && [ "$(uci -q get "multilogin.$section.interface")" = "$interface" ] && [ "$(uci -q get "multilogin.$section.v6face")" = "$v6face" ] && [ "$(uci -q get "multilogin.$section.account")" = "$account" ] && [ "$(uci -q get "multilogin.$section.ua_type")" = "$ua" ]; then
 		ml_emit 1 no_change ''
 		json_add_string section "$section"
 		json_add_boolean restart_required 0
@@ -1279,7 +1445,10 @@ ml_dispatch() {
 	case $method in
 	get_overview)
 		ml_emit 1 ok ''
-		ml_get_overview
+		ml_get_overview || {
+			ml_error internal_error 'configuration read failed'
+			return
+		}
 		ml_finish
 		;;
 	get_settings)

@@ -394,6 +394,55 @@ function rpcdSessionMetadataTests() {
   pass('rpcd-injected ubus_rpc_session metadata is type-checked and excluded from business schemas');
 }
 
+function uciSectionEnumerationTests() {
+  const collector = shellFunctionBody(config, 'ml_collect_sections');
+  assert.match(collector, /listing=\$\(uci -q -X show multilogin 2>\/dev\/null\) \|\| return 1/,
+    'section enumeration does not request generated anonymous UCI names or fail closed');
+  assert.match(collector, /printf '%s\\n' "\$listing"/, 'section enumeration parses captured UCI output');
+  assert.match(collector, /status=\$\?[\s\S]*listing=''[\s\S]*return "\$status"/, 'section enumeration leaves captured UCI output in shell state');
+
+  const normalize = shellFunctionBody(config, 'ml_normalize_section');
+  const saveAccount = shellFunctionBody(config, 'ml_save_account');
+  const saveInstance = shellFunctionBody(config, 'ml_save_instance');
+  assert.match(config, /ml_next_section_name\(\)/, 'stable section allocator is absent');
+  assert.match(config, /ml_section_is_anonymous\(\)/, 'normalization has no actual anonymous-section detector');
+  assert.match(config, /uci -q -X show multilogin[\s\S]*uci -q show multilogin/, 'anonymous-section detector does not compare extended and ordinary UCI listings');
+  assert.doesNotMatch(normalize, /case \$section in cfg\*\)/, 'normalization treats every cfg-prefixed name as anonymous');
+  assert.match(normalize, /uci rename "multilogin\.\$section=\$target"/, 'anonymous sections are not normalized to named sections');
+  assert.match(normalize, /ml_collect_sections instance[\s\S]*ml_normalize_section "\$reference" instance[\s\S]*uci rename "multilogin\.\$section=\$target"[\s\S]*uci set "multilogin\.\$normalized_reference\.account=\$target"/, 'account reference updates do not name instances before rewriting links');
+  assert.match(saveAccount, /ml_next_section_name account[\s\S]*uci set "multilogin\.\$section=account"/, 'new accounts are still created anonymously');
+  assert.doesNotMatch(saveAccount, /uci add multilogin account/, 'account save still depends on an unstable anonymous ID');
+  assert.match(saveAccount, /ml_normalize_section "\$section" account/, 'legacy anonymous accounts are not normalized before update');
+  assert.match(saveInstance, /ml_next_section_name instance[\s\S]*uci set "multilogin\.\$section=instance"/, 'new instances are still created anonymously');
+  assert.doesNotMatch(saveInstance, /uci add multilogin instance/, 'instance save still depends on an unstable anonymous ID');
+  assert.match(saveInstance, /ml_normalize_section "\$account" account/, 'instance save does not normalize legacy anonymous account references');
+  assert.match(saveInstance, /normalized_changed[\s\S]*\[ "\$normalized_changed" != 1 \]/, 'instance no-change path ignores section normalization');
+  assert.match(saveInstance, /uci revert multilogin[\s\S]*ml_error not_found 'instance not found'/, 'instance validation can leak an uncommitted account normalization');
+  assert.match(saveInstance, /section=\$\(ml_next_section_name instance\) \|\| \{[\s\S]*uci revert multilogin/, 'instance allocator failure can leak account normalization');
+  assert.ok(saveInstance.indexOf('section=$(ml_next_section_name instance)') < saveInstance.indexOf('ml_normalize_section "$account" account'),
+    'new instance allocation occurs after account normalization');
+  assert.match(shellFunctionBody(config, 'ml_get_overview'), /account_sections=\$\(ml_collect_sections account\) \|\| return 1[\s\S]*instance_sections=\$\(ml_collect_sections instance\) \|\| return 1/, 'overview hides section-enumeration failures');
+  assert.match(shellFunctionBody(config, 'ml_list_accounts'), /sections=\$\(ml_collect_sections account\) \|\|[\s\S]*instance_sections=\$\(ml_collect_sections instance\) \|\|/, 'account listing hides section-enumeration failures');
+  assert.match(shellFunctionBody(config, 'ml_delete_account'), /references=\$\(ml_collect_sections instance\) \|\|[\s\S]*configuration read failed/, 'account deletion treats failed reference enumeration as empty');
+  assert.match(shellFunctionBody(config, 'ml_list_instances'), /sections=\$\(ml_collect_sections instance\) \|\|[\s\S]*configuration read failed/, 'instance listing hides section-enumeration failures');
+
+  const listing = [
+    'multilogin.global=settings',
+    'multilogin.cfg_account=account',
+    'multilogin.@account[0]=account',
+    'multilogin.named_account=account',
+    'multilogin.cfg_custom=account',
+    'multilogin.cfg_instance=instance',
+  ].join('\n');
+  const parser = String.raw`type=$1; listing=$2; printf '%s\n' "$listing" | sed -n "s/^multilogin\.\([A-Za-z_][A-Za-z0-9_]*\)=\('$type'\|$type\)$/\1/p" | LC_ALL=C sort -u`;
+  for (const [type, expected] of [['account', ['cfg_account', 'cfg_custom', 'named_account']], ['instance', ['cfg_instance']]]) {
+    const result = spawnSync('/bin/sh', ['-c', parser, 'section-parser', type, listing], { encoding: 'utf8', timeout: 3000 });
+    assert.equal(result.status, 0, `${type} section parser failed`);
+    assert.deepEqual(result.stdout.trim().split('\n').filter(Boolean), expected, `${type} section enumeration changed`);
+  }
+  pass('UCI enumeration and stable named section references cover anonymous legacy data');
+}
+
 rpcSurfaceTests();
 browserBoundaryTests();
 tokenAndRequestTests();
@@ -408,4 +457,5 @@ luciRpcEnvelopeTests();
 luciNullChildTests();
 jshnNounsetCompatibilityTests();
 rpcdSessionMetadataTests();
+uciSectionEnumerationTests();
 process.stdout.write(`${checks} Phase 7 static/pure checks passed.\n`);

@@ -65,7 +65,7 @@ Temporary action/curl files use an unpredictable `mktemp -d` directory under `${
 
 ## 3. UCI compatibility contract
 
-Existing section names, references, and fields remain valid. Phase 4 migration does not rename sections or rewrite credential values.
+Existing section names, references, and fields remain valid. Phase 4 migration does not rename sections or rewrite credential values. A later configuration edit may normalize a legacy anonymous `account` or `instance` section to a deterministic named section while preserving all fields and references in the same locked UCI transaction; existing named sections (including names beginning with `cfg`) are never renamed by this normalization.
 
 | Section type | Option | Values/default | v3 behavior |
 | --- | --- | --- | --- |
@@ -357,7 +357,7 @@ Settings integer bounds are: `retry_interval` and `check_interval` 1–3600, `ma
 The fixed token and creation rules are:
 
 - An account or instance `section` supplied by a client is either the empty string or matches `[A-Za-z_][A-Za-z0-9_]{0,63}`. `@type[index]`, dots, slashes, whitespace, shell metacharacters, package prefixes, and all other forms are invalid. A non-empty ID must already exist in `multilogin` with exactly the expected `account` or `instance` type.
-- Empty `section` is accepted only by `save_account` and `save_instance`. It means create exactly one section of the corresponding type with `uci add multilogin account|instance`, validate the returned generated ID against the same grammar, and return that ID. Empty `section` is invalid for both delete methods and every action method. A failed validation or write leaves no newly committed section.
+- Empty `section` is accepted only by `save_account` and `save_instance`. It means allocate the first unused deterministic name (`account_N` or `instance_N`), create exactly one named section of the corresponding type, and return that stable ID. Legacy anonymous sections are read with UCI's generated-name listing and normalized before an edit or durable reference rewrite. Empty `section` is invalid for both delete methods and every action method. A failed validation or write leaves no newly committed section or transient normalization.
 - `interface`, optional non-empty `v6face`, and `base_iface` match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}` (1–15 ASCII bytes). Empty `v6face` means absent. Empty `interface` or `base_iface`, a leading punctuation character, and every value over 15 bytes are invalid.
 - Server-reserved ownership IDs have the exact spellings listed below and are not accepted as client-selected section IDs. Clients never supply a generated network/firewall/mwan3 object ID.
 
