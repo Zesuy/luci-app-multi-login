@@ -3,10 +3,14 @@
 'require rpc';
 'require ui';
 
-var callListAuto = rpc.declare({ object: 'multilogin', method: 'list_auto', expect: {} });
-var callQuickSetup = rpc.declare({ object: 'multilogin', method: 'quick_setup', params: ['base_iface', 'count'], expect: {} });
-var callRemoveAuto = rpc.declare({ object: 'multilogin', method: 'remove_auto', expect: {} });
-var callRecover = rpc.declare({ object: 'multilogin', method: 'network_recover', expect: {} });
+var callListAuto = rpc.declare({ object: 'multilogin', method: 'list_auto', expect: { '': {} } });
+var callQuickSetup = rpc.declare({ object: 'multilogin', method: 'quick_setup', params: ['base_iface', 'count'], expect: { '': {} } });
+var callRemoveAuto = rpc.declare({ object: 'multilogin', method: 'remove_auto', expect: { '': {} } });
+var callRecover = rpc.declare({ object: 'multilogin', method: 'network_recover', expect: { '': {} } });
+
+function compact(children) {
+    return children.filter(function (child) { return child !== null && child !== undefined; });
+}
 
 function failure() { return { ok: false, code: 'internal_error', message: _('无法读取受管网络状态。'), data: {} }; }
 function button(label, click, disabled, kind) { return E('button', { class: 'btn cbi-button ' + (kind || 'cbi-button-action'), type: 'button', style: 'min-height:44px;margin:.2em', disabled: disabled, click: click }, label); }
@@ -40,12 +44,12 @@ return view.extend({
         function draw() {
             var response = state.response, data = response.ok ? response.data : { interfaces: [], count: 0 }, recovery = response.ok && data.recovery_required;
             var rows = data.interfaces && data.interfaces.length ? data.interfaces.map(function (iface) { return E('tr', { class: 'tr' }, [E('td', { class: 'td' }, iface.name), E('td', { class: 'td' }, iface.device), E('td', { class: 'td' }, String(iface.metric))]); }) : [E('tr', { class: 'tr' }, E('td', { class: 'td', colspan: '3' }, _('没有由 MultiLogin 记录为已拥有的接口。未记录的 auto_* 或同名对象不会显示、更不会被删除。')))];
-            root.replaceChildren(
+            root.replaceChildren.apply(root, compact([
                 E('h2', {}, _('网络')),
                 E('p', { class: 'cbi-map-descr' }, _('仅管理由 MultiLogin 精确记录的 ml3 资源。页面不会扫描、认领或按名称前缀删除其他网络、防火墙或 mwan3 配置。')),
-                state.feedback ? E('div', { class: state.error ? 'alert-message' : 'alert-message notice', role: state.error ? 'alert' : 'status' }, [E('p', {}, state.feedback), state.error ? button(_('重试'), function () { reload(); }, state.busy) : null]) : null,
+                state.feedback ? E('div', { class: state.error ? 'alert-message' : 'alert-message notice', role: state.error ? 'alert' : 'status' }, compact([E('p', {}, state.feedback), state.error ? button(_('重试'), function () { reload(); }, state.busy) : null])) : null,
                 recovery ? E('div', { class: 'alert-message', role: 'alert' }, [E('p', {}, _('检测到未完成或需要人工处理的网络恢复记录。新的生成和删除已被阻止。')), button(_('执行固定恢复检查'), function () { run(callRecover, _('恢复检查已完成。')); }, state.busy)]) : null,
-                response.ok ? E('div', { class: 'cbi-section' }, [E('legend', {}, _('受管资源')), E('p', { class: 'cbi-section-descr' }, data.count ? _('当前基于 %s 管理 %s 个接口。').format(data.base_iface, data.count) : _('尚未创建受管网络资源。')), E('div', { style: 'overflow-x:auto' }, E('table', { class: 'table cbi-section-table' }, [E('thead', {}, E('tr', { class: 'tr table-titles' }, [E('th', { class: 'th' }, _('逻辑接口')), E('th', { class: 'th' }, _('设备')), E('th', { class: 'th' }, _('路由跃点'))])), E('tbody', {}, rows)])), data.count ? E('div', { class: 'right' }, button(_('删除受管资源'), function () { confirm(_('删除受管资源'), _('仅删除精确记录在 MultiLogin 所有权状态中的资源；不会按 auto_* 前缀清理其他对象。'), callRemoveAuto, _('受管资源已删除。'), true); }, state.busy, 'cbi-button-negative')) : null]) : null,
+                response.ok ? E('div', { class: 'cbi-section' }, compact([E('legend', {}, _('受管资源')), E('p', { class: 'cbi-section-descr' }, data.count ? _('当前基于 %s 管理 %s 个接口。').format(data.base_iface, data.count) : _('尚未创建受管网络资源。')), E('div', { style: 'overflow-x:auto' }, E('table', { class: 'table cbi-section-table' }, [E('thead', {}, E('tr', { class: 'tr table-titles' }, [E('th', { class: 'th' }, _('逻辑接口')), E('th', { class: 'th' }, _('设备')), E('th', { class: 'th' }, _('路由跃点'))])), E('tbody', {}, rows)])), data.count ? E('div', { class: 'right' }, button(_('删除受管资源'), function () { confirm(_('删除受管资源'), _('仅删除精确记录在 MultiLogin 所有权状态中的资源；不会按 auto_* 前缀清理其他对象。'), callRemoveAuto, _('受管资源已删除。'), true); }, state.busy, 'cbi-button-negative')) : null])) : null,
                 response.ok && !recovery ? E('div', { class: 'cbi-section' }, [
                     E('legend', {}, _('创建受管资源')),
                     E('p', { class: 'cbi-section-descr' }, _('输入基础接口名称和数量（1–10）。提交前后端都会验证所有权、碰撞和恢复状态；不会覆盖未拥有的对象。')),
@@ -67,7 +71,7 @@ return view.extend({
                     }, state.busy))
                 ]) : null,
                 E('div', { class: 'right' }, button(state.busy ? _('正在刷新…') : _('刷新'), function () { reload(); }, state.busy))
-            );
+            ]));
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
         }
         draw(); return root;

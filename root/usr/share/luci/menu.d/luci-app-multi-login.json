@@ -37,27 +37,22 @@
 		"action": { "type": "view", "path": "multilogin/diagnostics" }
 	},
 	"admin/services/multilogin/settings": {
-		"title": "配置",
 		"hidden": true,
 		"action": { "type": "alias", "path": "admin/services/multilogin/configuration" }
 	},
 	"admin/services/multilogin/accounts": {
-		"title": "配置",
 		"hidden": true,
 		"action": { "type": "alias", "path": "admin/services/multilogin/configuration" }
 	},
 	"admin/services/multilogin/interfaces": {
-		"title": "网络",
 		"hidden": true,
 		"action": { "type": "alias", "path": "admin/services/multilogin/network" }
 	},
 	"admin/services/multilogin/script": {
-		"title": "脚本",
 		"hidden": true,
 		"action": { "type": "alias", "path": "admin/services/multilogin/scripts" }
 	},
 	"admin/services/multilogin/log": {
-		"title": "诊断",
 		"hidden": true,
 		"action": { "type": "alias", "path": "admin/services/multilogin/diagnostics" }
 	}

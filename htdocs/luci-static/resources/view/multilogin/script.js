@@ -5,68 +5,68 @@
 var callScriptInfo = rpc.declare({
     object: 'multilogin',
     method: 'script_info',
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptCheck = rpc.declare({
     object: 'multilogin',
     method: 'script_check',
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptStage = rpc.declare({
     object: 'multilogin',
     method: 'script_stage',
     params: ['expected_generation'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptValidate = rpc.declare({
     object: 'multilogin',
     method: 'script_validate',
     params: ['source', 'expected_sha256', 'expected_generation', 'confirm_execute'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptActivate = rpc.declare({
     object: 'multilogin',
     method: 'script_activate',
     params: ['source', 'expected_sha256', 'expected_generation', 'confirm_activate', 'allow_downgrade'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptRollback = rpc.declare({
     object: 'multilogin',
     method: 'script_rollback',
     params: ['expected_sha256', 'expected_generation', 'confirm_activate'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptRestore = rpc.declare({
     object: 'multilogin',
     method: 'script_restore',
     params: ['expected_sha256', 'expected_generation', 'confirm_activate'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptGetDraft = rpc.declare({
     object: 'multilogin',
     method: 'script_get_draft',
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptSaveDraft = rpc.declare({
     object: 'multilogin',
     method: 'script_save_draft',
     params: ['content', 'base_sha256', 'expected_generation'],
-    expect: {}
+    expect: { '': {} }
 });
 
 var callScriptDiscardDraft = rpc.declare({
     object: 'multilogin',
     method: 'script_discard_draft',
     params: ['expected_sha256', 'expected_generation'],
-    expect: {}
+    expect: { '': {} }
 });
 
 function emptySummary() {
@@ -80,6 +80,10 @@ function emptySummary() {
 
 function responseError(message) {
     return { ok: false, code: 'internal_error', message: message || _('请求未能完成。'), data: {} };
+}
+
+function compact(children) {
+    return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
 function summary(data, name) {
@@ -370,8 +374,8 @@ return view.extend({
 
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
 
-            content.replaceChildren(
-                E('div', { 'class': 'cbi-section' }, [
+            content.replaceChildren.apply(content, compact([
+                E('div', { 'class': 'cbi-section' }, compact([
                     E('h3', {}, _('脚本管理器')),
                     E('p', { 'class': 'cbi-section-descr' }, _('管理固定更新通道或独立的自定义草稿。所有更改都不会直接编辑正在运行的脚本。')),
                     (!state.info.ok || info.recovery_required || draftLoadError) ? E('div', { 'class': 'alert-message', 'role': 'alert' }, [
@@ -382,7 +386,7 @@ return view.extend({
                     E('div', { 'class': 'script-grid' }, [
                         E('section', { 'class': 'cbi-section-node script-panel', 'aria-labelledby': 'managed-heading' }, [
                             E('h4', { 'id': 'managed-heading' }, _('托管')),
-                            E('dl', { 'class': 'script-metadata' }, [
+                            E('dl', { 'class': 'script-metadata' }, compact([
                                 metadataRow(_('模式'), info.mode || _('未知')),
                                 metadataRow(_('固定更新 URL'), info.raw_url || _('离线时不可用')),
                                 metadataRow(_('活动脚本来源'), active.source || _('未知')),
@@ -391,7 +395,7 @@ return view.extend({
                                 state.check ? metadataRow(_('最近检查结果'), '%s — %s'.format(state.check.available ? _('有可用更新') : _('没有可用更新'), state.check.relation || _('关系未知'))) : null,
                                 state.check ? metadataRow(_('远程版本和指纹'), summaryText(remote)) : null,
                                 state.check ? metadataRow(_('需要确认降级'), state.check.downgrade ? _('是') : _('否')) : null
-                            ]),
+                            ])),
                             E('div', { 'class': 'script-actions' }, [
                                 nativeButton(_('检查更新'), function () {
                                     runAction(_('检查更新'), callScriptCheck, { preserveTypedDraft: true, storeCheck: true });
@@ -435,7 +439,7 @@ return view.extend({
                                 }, disabled || !factory.present, 'cbi-button-negative')
                             ])
                         ]),
-                        E('section', { 'class': 'cbi-section-node script-panel', 'aria-labelledby': 'custom-heading' }, [
+                        E('section', { 'class': 'cbi-section-node script-panel', 'aria-labelledby': 'custom-heading' }, compact([
                             E('h4', { 'id': 'custom-heading' }, _('自定义')),
                             E('p', { 'id': 'custom-root-warning', 'class': 'alert-message', 'role': 'alert' }, _('警告：此编辑器保存 root 级代码。请勿写入账户凭据或其他机密；验证会以 root 权限执行保存的精确草稿。')),
                             E('label', { 'for': 'custom-draft' }, _('自定义草稿')),
@@ -483,10 +487,10 @@ return view.extend({
                             ]),
                             state.conflict ? E('p', { 'class': 'alert-message', 'role': 'alert' }, _('服务器上的草稿已变化。已保留您的输入，但重新载入最新服务器草稿前不能保存。')) : null,
                             nativeButton(_('重新载入最新服务器草稿'), reloadServerDraft, disabled || draftLoadError || !state.draft.ok)
-                        ])
+                        ]))
                     ])
-                ])
-            );
+                ]))
+            ]));
             setFeedback(state.feedbackKind, state.feedback);
         }
 

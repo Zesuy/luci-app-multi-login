@@ -225,6 +225,18 @@ ml_refresh_rpcd() {
 	/etc/init.d/rpcd restart >/dev/null 2>&1 || return 1
 }
 
+# LuCI caches the generated menu tree under /tmp.  Remove only the
+# LuCI-owned index files after a live package upgrade so compatibility aliases
+# and newly installed views are not served from a stale tree.
+ml_refresh_luci() {
+	ml_live_root || return 0
+	local cache
+	for cache in /tmp/luci-indexcache.*; do
+		[ -f "$cache" ] && [ ! -L "$cache" ] || continue
+		rm -f "$cache" || return 1
+	done
+}
+
 ml_snapshot_one() {
 	ML_SNAPSHOT_NAME=$1
 	ML_SNAPSHOT_PATH=$(ml_path "/etc/multilogin/$ML_SNAPSHOT_NAME")
@@ -477,6 +489,7 @@ ml_postinst() {
 	fi
 	if [ "$ML_EXISTING" = complete ]; then
 		ml_refresh_rpcd || :
+		ml_refresh_luci || :
 		return 0
 	fi
 	return 1

@@ -217,15 +217,20 @@ function rpcdRefreshLifecycleTests() {
   assert.match(refresh, /ml_live_root \|\| return 0/, 'rpcd refresh can run in an install root');
   assert.match(refresh, /\[ -x \/etc\/init\.d\/rpcd \] \|\| return 0/, 'rpcd refresh does not tolerate a missing init script');
   assert.match(refresh, /\/etc\/init\.d\/rpcd restart >\/dev\/null 2>&1 \|\| return 1/, 'rpcd refresh is not an explicit restart attempt');
+  const luciRefresh = migration.match(/ml_refresh_luci\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(luciRefresh, /ml_live_root \|\| return 0/, 'LuCI cache refresh can run in an install root');
+  assert.match(luciRefresh, /\/tmp\/luci-indexcache\.\*/, 'LuCI cache refresh does not target only its index cache');
+  assert.match(luciRefresh, /\[ -f "\$cache" \] && \[ ! -L "\$cache" \]/, 'LuCI cache refresh does not reject unsafe cache paths');
   const postinst = migration.match(/ml_postinst\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
   const restoredAt = postinst.indexOf('ml_restore_service || return 1');
   const stateAt = postinst.indexOf('ml_set_state complete || return 1');
   const refreshAt = postinst.indexOf('ml_refresh_rpcd || :');
-  assert.ok(restoredAt >= 0 && stateAt > restoredAt && refreshAt > stateAt,
-    'postinst does not refresh rpcd after service restoration and completion');
-  assert.match(postinst, /if \[ "\$ML_EXISTING" = complete \]; then[\s\S]*?ml_refresh_rpcd \|\| :/,
-    'a repeated postinst with completed migration cannot refresh rpcd');
-  pass('postinst refreshes rpcd on a live root without aborting or requiring a new migration generation');
+  const luciAt = postinst.indexOf('ml_refresh_luci || :');
+  assert.ok(restoredAt >= 0 && stateAt > restoredAt && refreshAt > stateAt && luciAt > refreshAt,
+    'postinst does not refresh rpcd and LuCI caches after service restoration and completion');
+  assert.match(postinst, /if \[ "\$ML_EXISTING" = complete \]; then[\s\S]*?ml_refresh_rpcd \|\| :[\s\S]*?ml_refresh_luci \|\| :/,
+    'a repeated postinst with completed migration cannot refresh rpcd and LuCI caches');
+  pass('postinst refreshes rpcd and LuCI menu caches on a live root without aborting or requiring a new migration generation');
 }
 
 packageTextTests();

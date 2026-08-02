@@ -2,10 +2,14 @@
 'require view';
 'require rpc';
 
-var callOverview = rpc.declare({ object: 'multilogin', method: 'get_overview', expect: {} });
+var callOverview = rpc.declare({ object: 'multilogin', method: 'get_overview', expect: { '': {} } });
 
 function failure() {
     return { ok: false, code: 'internal_error', message: _('无法读取概览。'), data: {} };
+}
+
+function compact(children) {
+    return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
 function button(label, click, disabled) {
@@ -50,13 +54,13 @@ return view.extend({
             var response = state.response;
             var data = response.ok ? response.data : {};
             var error = !response.ok ? (response.message || _('概览请求失败，请重试。')) : '';
-            root.replaceChildren(
+            root.replaceChildren.apply(root, compact([
                 E('h2', {}, _('概览')),
                 E('p', { 'class': 'cbi-map-descr' }, _('查看多拨自动登录的服务、配置与受管网络状态。配置保存后需在“配置”页面明确应用服务操作。')),
                 error ? E('div', { 'class': 'alert-message', 'role': 'alert' }, [
                     E('p', {}, error), button(_('重试'), refresh, state.busy)
                 ]) : null,
-                !error ? E('div', { 'class': 'cbi-section' }, [
+                !error ? E('div', { 'class': 'cbi-section' }, compact([
                     E('legend', {}, _('当前状态')),
                     item(_('自动登录设置'), data.settings_enabled ? _('已启用') : _('已停用')),
                     item(_('服务'), '%s / %s'.format(data.service_enabled ? _('已启用') : _('未启用'), data.service_running ? _('运行中') : _('未运行'))),
@@ -65,8 +69,8 @@ return view.extend({
                     data.network_recovery_required ? E('div', { 'class': 'alert-message', 'role': 'alert' },
                         _('网络恢复需要处理。请前往“网络”查看受管状态并执行固定恢复操作。')) : null,
                     E('div', { 'class': 'right' }, [button(state.busy ? _('正在刷新…') : _('刷新'), refresh, state.busy)])
-                ]) : null
-            );
+                ])) : null
+            ]));
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
         }
 

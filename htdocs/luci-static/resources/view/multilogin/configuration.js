@@ -3,19 +3,23 @@
 'require rpc';
 'require ui';
 
-var callSettings = rpc.declare({ object: 'multilogin', method: 'get_settings', expect: {} });
-var callSaveSettings = rpc.declare({ object: 'multilogin', method: 'save_settings', params: ['enabled', 'log_level', 'retry_interval', 'check_interval', 'max_retry_delay', 'already_logged_delay'], expect: {} });
-var callAccounts = rpc.declare({ object: 'multilogin', method: 'list_accounts', expect: {} });
-var callSaveAccount = rpc.declare({ object: 'multilogin', method: 'save_account', params: ['section', 'alias', 'username', 'password'], expect: {} });
-var callDeleteAccount = rpc.declare({ object: 'multilogin', method: 'delete_account', params: ['section'], expect: {} });
-var callInstances = rpc.declare({ object: 'multilogin', method: 'list_instances', expect: {} });
-var callSaveInstance = rpc.declare({ object: 'multilogin', method: 'save_instance', params: ['section', 'enabled', 'alias', 'interface', 'v6face', 'account', 'ua_type'], expect: {} });
-var callDeleteInstance = rpc.declare({ object: 'multilogin', method: 'delete_instance', params: ['section'], expect: {} });
-var callServiceStatus = rpc.declare({ object: 'multilogin', method: 'service_status', expect: {} });
-var callServiceAction = rpc.declare({ object: 'multilogin', method: 'service_action', params: ['action'], expect: {} });
-var callCheckInstance = rpc.declare({ object: 'multilogin', method: 'check_instance', params: ['section'], expect: {} });
-var callTestInstance = rpc.declare({ object: 'multilogin', method: 'test_instance', params: ['section'], expect: {} });
-var callLogoutInstance = rpc.declare({ object: 'multilogin', method: 'logout_instance', params: ['section'], expect: {} });
+var callSettings = rpc.declare({ object: 'multilogin', method: 'get_settings', expect: { '': {} } });
+var callSaveSettings = rpc.declare({ object: 'multilogin', method: 'save_settings', params: ['enabled', 'log_level', 'retry_interval', 'check_interval', 'max_retry_delay', 'already_logged_delay'], expect: { '': {} } });
+var callAccounts = rpc.declare({ object: 'multilogin', method: 'list_accounts', expect: { '': {} } });
+var callSaveAccount = rpc.declare({ object: 'multilogin', method: 'save_account', params: ['section', 'alias', 'username', 'password'], expect: { '': {} } });
+var callDeleteAccount = rpc.declare({ object: 'multilogin', method: 'delete_account', params: ['section'], expect: { '': {} } });
+var callInstances = rpc.declare({ object: 'multilogin', method: 'list_instances', expect: { '': {} } });
+var callSaveInstance = rpc.declare({ object: 'multilogin', method: 'save_instance', params: ['section', 'enabled', 'alias', 'interface', 'v6face', 'account', 'ua_type'], expect: { '': {} } });
+var callDeleteInstance = rpc.declare({ object: 'multilogin', method: 'delete_instance', params: ['section'], expect: { '': {} } });
+var callServiceStatus = rpc.declare({ object: 'multilogin', method: 'service_status', expect: { '': {} } });
+var callServiceAction = rpc.declare({ object: 'multilogin', method: 'service_action', params: ['action'], expect: { '': {} } });
+var callCheckInstance = rpc.declare({ object: 'multilogin', method: 'check_instance', params: ['section'], expect: { '': {} } });
+var callTestInstance = rpc.declare({ object: 'multilogin', method: 'test_instance', params: ['section'], expect: { '': {} } });
+var callLogoutInstance = rpc.declare({ object: 'multilogin', method: 'logout_instance', params: ['section'], expect: { '': {} } });
+
+function compact(children) {
+    return children.filter(function (child) { return child !== null && child !== undefined; });
+}
 
 function failed(message) { return { ok: false, code: 'internal_error', message: message || _('请求失败。'), data: {} }; }
 function button(label, handler, disabled, kind) {
@@ -24,10 +28,10 @@ function button(label, handler, disabled, kind) {
 function input(id, label, value, type, help) {
     return E('div', { 'class': 'cbi-value' }, [
         E('label', { 'class': 'cbi-value-title', 'for': id }, label),
-        E('div', { 'class': 'cbi-value-field' }, [
+        E('div', { 'class': 'cbi-value-field' }, compact([
             E('input', { 'id': id, 'class': 'cbi-input-text', 'type': type || 'text', 'value': value || '', 'style': 'min-height:38px;max-width:28em;width:100%' }),
             help ? E('div', { 'class': 'cbi-value-description' }, help) : null
-        ])
+        ]))
     ]);
 }
 function notice(state, error) {
@@ -134,7 +138,7 @@ return view.extend({
             var unavailable = !settings || !state.accounts.ok || !state.instances.ok || !service;
             function accountRows() { return accounts.length ? accounts.map(function (account) { return E('tr', { class: 'tr' }, [E('td', { class: 'td' }, account.alias || '—'), E('td', { class: 'td' }, account.username), E('td', { class: 'td' }, account.password_set ? _('已设置') : _('未设置')), E('td', { class: 'td' }, String(account.reference_count)), E('td', { class: 'td' }, [button(_('编辑'), function () { accountEditor(account); }, state.busy), button(_('删除'), function () { confirmAction(_('删除账户'), _('删除“%s”吗？被实例引用的账户不会被删除。').format(account.alias || account.username), function () { return callDeleteAccount(account.section); }, _('账户已删除。'), true); }, state.busy, 'cbi-button-negative')])]); }) : [E('tr', { class: 'tr' }, E('td', { class: 'td', colspan: '5' }, _('尚未创建账户。请新增账户，再将其分配给登录实例。')))]; }
             function instanceRows() { return instanceData.instances.length ? instanceData.instances.map(function (instance) { return E('tr', { class: 'tr' }, [E('td', { class: 'td' }, instance.enabled === '1' ? _('是') : _('否')), E('td', { class: 'td' }, instance.alias || instance.section), E('td', { class: 'td' }, instance.interface), E('td', { class: 'td' }, instance.account_label || instance.account), E('td', { class: 'td' }, instance.ua_type === 'mobile' ? _('移动端') : 'PC'), E('td', { class: 'td' }, [button(_('编辑'), function () { instanceEditor(instance, accounts, instanceData.interfaces); }, state.busy), button(_('状态'), function () { run(function () { return callCheckInstance(instance.section); }, _('状态检查已完成。')); }, state.busy, 'cbi-button'), button(_('登录'), function () { confirmAction(_('登录测试'), _('将对“%s”执行一次登录操作。').format(instance.alias || instance.section), function () { return callTestInstance(instance.section); }, _('登录操作已完成。')); }, state.busy), button(_('注销'), function () { confirmAction(_('注销测试'), _('将对“%s”执行一次注销操作。').format(instance.alias || instance.section), function () { return callLogoutInstance(instance.section); }, _('注销操作已完成。'), true); }, state.busy, 'cbi-button-negative'), button(_('删除'), function () { confirmAction(_('删除实例'), _('删除“%s”吗？').format(instance.alias || instance.section), function () { return callDeleteInstance(instance.section); }, _('实例已删除。'), true); }, state.busy, 'cbi-button-negative')])]); }) : [E('tr', { class: 'tr' }, E('td', { class: 'td', colspan: '6' }, _('尚未创建登录实例。请先创建账户并选择可用接口。')))]; }
-            root.replaceChildren(E('h2', {}, _('配置')), E('p', { class: 'cbi-map-descr' }, _('统一管理全局参数、账户与登录实例。密码为只写字段；保存不会隐式重启服务。')), notice(state, state.feedbackKind === 'error'), unavailable ? E('div', { class: 'alert-message', role: 'alert' }, [E('p', {}, _('无法加载全部配置。未显示的数据不会被修改。')), button(_('重试'), function () { refresh(); }, state.busy)]) : null,
+            root.replaceChildren.apply(root, compact([E('h2', {}, _('配置')), E('p', { class: 'cbi-map-descr' }, _('统一管理全局参数、账户与登录实例。密码为只写字段；保存不会隐式重启服务。')), notice(state, state.feedbackKind === 'error'), unavailable ? E('div', { class: 'alert-message', role: 'alert' }, [E('p', {}, _('无法加载全部配置。未显示的数据不会被修改。')), button(_('重试'), function () { refresh(); }, state.busy)]) : null,
                 settings ? E('div', { class: 'cbi-section' }, [
                     E('legend', {}, _('全局设置')),
                     E('div', { class: 'cbi-value' }, [
@@ -161,7 +165,7 @@ return view.extend({
                 state.accounts.ok ? E('div', { class: 'cbi-section' }, [E('legend', {}, _('账户')), E('p', { class: 'cbi-section-descr' }, _('页面只显示密码是否已设置；编辑现有账户时留空密码即可保持原值。')), button(_('新增账户'), function () { accountEditor({ section: '', alias: '', username: '' }); }, state.busy), E('div', { style: 'overflow-x:auto' }, E('table', { class: 'table cbi-section-table' }, [E('thead', {}, E('tr', { class: 'tr table-titles' }, [E('th', { class: 'th' }, _('别名')), E('th', { class: 'th' }, _('账号')), E('th', { class: 'th' }, _('密码')), E('th', { class: 'th' }, _('引用')), E('th', { class: 'th' }, _('操作'))])), E('tbody', {}, accountRows())]))]) : null,
                 state.instances.ok ? E('div', { class: 'cbi-section' }, [E('legend', {}, _('登录实例')), button(_('新增实例'), function () { instanceEditor({ section: '', enabled: '1', alias: '', interface: '', v6face: '', account: '', ua_type: 'pc' }, accounts, instanceData.interfaces); }, state.busy), E('div', { style: 'overflow-x:auto' }, E('table', { class: 'table cbi-section-table' }, [E('thead', {}, E('tr', { class: 'tr table-titles' }, [E('th', { class: 'th' }, _('启用')), E('th', { class: 'th' }, _('别名')), E('th', { class: 'th' }, _('接口')), E('th', { class: 'th' }, _('账户')), E('th', { class: 'th' }, _('UA')), E('th', { class: 'th' }, _('操作'))])), E('tbody', {}, instanceRows())]))]) : null,
                 service ? E('div', { class: 'cbi-section' }, [E('legend', {}, _('服务应用')), E('p', { class: 'cbi-section-descr' }, _('服务当前：%s，%s。配置更改不会自动执行这些操作。').format(service.enabled ? _('已启用') : _('未启用'), service.running ? _('运行中') : _('未运行'))), E('div', {}, ['start', 'stop', 'restart', 'enable', 'disable'].map(function (action) { return button(_(action), function () { confirmAction(_('服务操作'), _('确认对 MultiLogin 服务执行“%s”吗？').format(action), function () { return callServiceAction(action); }, _('服务状态已更新。'), action === 'stop' || action === 'disable'); }, state.busy, action === 'stop' || action === 'disable' ? 'cbi-button-negative' : 'cbi-button-action'); }))]) : null,
-                E('div', { class: 'right' }, button(state.busy ? _('正在刷新…') : _('刷新页面'), function () { refresh(); }, state.busy)));
+                E('div', { class: 'right' }, button(state.busy ? _('正在刷新…') : _('刷新页面'), function () { refresh(); }, state.busy))]));
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
         }
         draw(); return root;

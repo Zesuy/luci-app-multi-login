@@ -14,6 +14,7 @@ const configPath = path.join(repository, 'root/usr/libexec/multilogin-config');
 const policyPath = path.join(repository, 'root/usr/lib/multilogin/config-policy.sh');
 const aclPath = path.join(repository, 'root/usr/share/rpcd/acl.d/luci-app-multi-login.json');
 const menuPath = path.join(repository, 'root/usr/share/luci/menu.d/luci-app-multi-login.json');
+const viewDirectory = path.join(repository, 'htdocs/luci-static/resources/view/multilogin');
 const docs = ['README.md', 'PROJECT_OVERVIEW.md'];
 const read = (file) => fs.readFileSync(file, 'utf8');
 const rpc = read(rpcPath);
@@ -314,6 +315,7 @@ function aclAndMenuTests() {
   for (const [legacy, target] of Object.entries({ settings: 'configuration', accounts: 'configuration', interfaces: 'network', script: 'scripts', log: 'diagnostics' })) {
     const entry = menu[`admin/services/multilogin/${legacy}`];
     assert.equal(entry?.hidden, true, `${legacy} compatibility alias is not hidden`);
+    assert.equal(Object.hasOwn(entry ?? {}, 'title'), false, `${legacy} compatibility alias still exposes a menu title on LuCI 23.05`);
     assert.equal(entry?.action?.type, 'alias', `${legacy} compatibility route loads an old view`);
     assert.equal(entry?.action?.path, `admin/services/multilogin/${target}`, `${legacy} alias targets wrong route`);
   }
@@ -328,6 +330,42 @@ function docsTests() {
     assert.doesNotMatch(source, /(?:student123|pass123|password123|your_password|your_account)/i, `${file} contains stock credential sentinel`);
   }
   pass('README and project overview contain no credential-bearing examples');
+}
+
+function luciRpcEnvelopeTests() {
+  const views = fs.readdirSync(viewDirectory).filter((name) => name.endsWith('.js')).sort();
+  assert.ok(views.length >= 5, 'MultiLogin LuCI view set is unexpectedly incomplete');
+  for (const name of views) {
+    const source = read(path.join(viewDirectory, name));
+    const declarations = source.match(/rpc\.declare\s*\(\s*\{/g) ?? [];
+    assert.ok(declarations.length > 0, `${name} has no RPC declarations`);
+    assert.equal((source.match(/expect:\s*\{\s*\}/g) ?? []).length, 0, `${name} uses ambiguous empty RPC expect declarations`);
+    assert.equal((source.match(/expect:\s*\{\s*['"]['"]\s*:\s*\{\s*\}\s*\}/g) ?? []).length, declarations.length,
+      `${name} does not preserve the complete RPC response envelope`);
+  }
+  pass('LuCI RPC declarations preserve complete response envelopes across supported LuCI versions');
+}
+
+function luciNullChildTests() {
+  const expectedCompactCalls = {
+    configuration: 2,
+    diagnostics: 2,
+    network: 3,
+    overview: 2,
+    script: 4
+  };
+  for (const [name, expected] of Object.entries(expectedCompactCalls)) {
+    const source = read(path.join(viewDirectory, `${name}.js`));
+    assert.match(source, /function compact\(children\)\s*\{[\s\S]*?child !== null && child !== undefined/, `${name} has no null-child filter`);
+    assert.equal((source.match(/compact\(\[/g) ?? []).length, expected, `${name} has an unexpected number of filtered child lists`);
+    assert.doesNotMatch(source, /(?:root|content)\.replaceChildren\s*\(/, `${name} passes raw children to replaceChildren`);
+    assert.match(source, /(?:root|content)\.replaceChildren\.apply\([^;]*compact\(\[/, `${name} does not filter replaceChildren arguments`);
+  }
+  assert.match(read(path.join(viewDirectory, 'configuration.js')), /function input\([\s\S]*?compact\(\[/, 'configuration input help child is not filtered');
+  assert.match(read(path.join(viewDirectory, 'overview.js')), /!error \? E\([\s\S]*?compact\(\[/, 'overview status children are not filtered');
+  assert.match(read(path.join(viewDirectory, 'network.js')), /state\.feedback \? E\([\s\S]*?compact\(\[/, 'network feedback children are not filtered');
+  assert.match(read(path.join(viewDirectory, 'script.js')), /custom-heading[\s\S]*?compact\(\[/, 'script conflict child is not filtered');
+  pass('LuCI optional DOM children never render literal null text on legacy appenders');
 }
 
 function jshnNounsetCompatibilityTests() {
@@ -353,5 +391,7 @@ transactionSafetyTests();
 logBoundaryTests();
 aclAndMenuTests();
 docsTests();
+luciRpcEnvelopeTests();
+luciNullChildTests();
 jshnNounsetCompatibilityTests();
 process.stdout.write(`${checks} Phase 7 static/pure checks passed.\n`);
