@@ -16,3 +16,11 @@
 - Limit unattended gates to compile/lint/static checks, read-only artifact inspection, and host-independent product logic. Do not build or extend OpenWrt/opkg/procd/UCI/service/network/rootfs/reboot simulations; defer those integration claims to Phase 9.
 - Use CodeGraph first for structural code questions; use literal search only for text or non-indexed shell/config files.
 - Preserve unrelated user changes and do not rewrite completed phases without evidence of a regression.
+
+## Luna-first workflow overlay
+
+- Use GPT-5.6 Luna Max as the default model for normal coding, analysis, tests, review, and orchestration.
+- Use `LUNA_LOCAL` for clear, bounded work; use `LUNA_PARALLEL` only for genuinely independent packets with disjoint writable files and explicit acceptance; use `SOL_ADVISED` only for high-impact ambiguity, architecture/security/data-integrity decisions, or two failed evidence-based attempts.
+- Every worker packet must state objective, context, writable scope, out-of-scope files, constraints, acceptance criteria, validation commands, return format, and escalation conditions.
+- The primary thread owns integration and final acceptance. Workers must report evidence and must not claim final acceptance.
+- Preserve the project-specific v3 phase gate, human-intervention boundary, and no-real-portal/device rules above. The workflow overlay never authorizes push, release, package installation, or device mutation.
