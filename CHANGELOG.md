@@ -5,14 +5,19 @@ All notable changes to MultiLogin are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and release entries use the SemVer source version. OpenWrt package archives
 append their independent `PKG_RELEASE` build revision; for this candidate the
-24.10 SDK emits `3.0.0-rc.1-r7` and the APK-based 25.12 SDK emits
-`3.0.0_rc1-r7`. The APK spelling is a
+24.10 SDK emits `3.0.0-rc.1-r8` and the APK-based 25.12 SDK emits
+`3.0.0_rc1-r8`. The APK spelling is a
 deterministic package-manager projection; the source, tag, script, and
 changelog version remains `3.0.0-rc.1`.
 
 ## [3.0.0-rc.1] - 2026-08-01
 
 ### Fixed
+
+- Package revision 8 accepts and validates rpcd's injected
+  `ubus_rpc_session` transport metadata before removing it from the exact
+  business request schema. This restores LuCI overview and script pages while
+  continuing to reject wrong-type metadata and unknown client fields.
 
 - Package revision 7 hides legacy LuCI compatibility aliases on the 23.05
   menu parser, invalidates the generated LuCI menu index after installation,
