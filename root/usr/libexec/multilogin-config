@@ -303,17 +303,25 @@ ml_request_type() {
 ml_req() { json_get_var "ML_$1" "$1" ''; }
 
 ml_valid_text() {
-	local value limit
+	local value limit cr nl
 	value=$1
 	limit=$2
 	[ "${#value}" -le "$limit" ] || return 1
-	case $value in *"$(printf '\r')"* | *"$(printf '\n')"*) return 1 ;; esac
+	# Command substitution strips trailing newlines. Keep a sentinel byte
+	# while constructing the newline so an empty pattern cannot match every
+	# value (which would reject all otherwise valid accounts/aliases).
+	cr=$(printf '\r')
+	nl=$(printf '\nx')
+	nl=${nl%x}
+	case $value in *"$cr"* | *"$nl"*) return 1 ;; esac
 	return 0
 }
 
 ml_valid_username() {
 	ml_valid_text "$1" 256 && [ -n "$1" ] || return 1
-	printf '%s' "$1" | grep -q '[[:cntrl:]]' && return 1
+	if printf '%s' "$1" | grep -q '[[:cntrl:]]'; then
+		return 1
+	fi
 	return 0
 }
 
@@ -377,12 +385,14 @@ ml_section_is_anonymous() {
 		return 2
 	}
 	ordinal=$(printf '%s\n' "$extended" | awk -v wanted="$section" -v wanted_type="$type" '
-		$0 !~ /^multilogin\.[A-Za-z_][A-Za-z0-9_]*=(account|instance)$/ { next }
-		name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
-		kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
-		if (kind != wanted_type) next
-		count++
-		if (name == wanted) { print count; found=1; exit }
+		{
+			if ($0 !~ /^multilogin\.[A-Za-z_][A-Za-z0-9_]*=(account|instance)$/) next
+			name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
+			kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
+			if (kind != wanted_type) next
+			count++
+			if (name == wanted) { print count; found=1; exit }
+		}
 		END { if (!found) exit 1 }
 	') || {
 		extended=''
@@ -390,12 +400,14 @@ ml_section_is_anonymous() {
 		return 2
 	}
 	standard_name=$(printf '%s\n' "$standard" | awk -v wanted_type="$type" -v wanted_ordinal="$ordinal" '
-		$0 !~ /^multilogin\.(@(account|instance)\[[0-9]+\]|[A-Za-z_][A-Za-z0-9_]*)=(account|instance)$/ { next }
-		name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
-		kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
-		if (kind != wanted_type) next
-		count++
-		if (count == wanted_ordinal) { print name; found=1; exit }
+		{
+			if ($0 !~ /^multilogin\.(@(account|instance)\[[0-9]+\]|[A-Za-z_][A-Za-z0-9_]*)=(account|instance)$/) next
+			name=$0; sub(/^multilogin\./, "", name); sub(/=.*/, "", name)
+			kind=$0; sub(/^multilogin\.[^=]+=*/, "", kind)
+			if (kind != wanted_type) next
+			count++
+			if (count == wanted_ordinal) { print name; found=1; exit }
+		}
 		END { if (!found) exit 1 }
 	') || {
 		extended=''
@@ -719,7 +731,7 @@ ml_list_instances() {
 }
 
 ml_save_instance() {
-	local section enabled alias interface v6face account ua created normalized_changed
+	local section enabled alias interface v6face account ua created normalized_changed section_listing grep_status
 	ml_request_type section string && ml_request_type enabled string && ml_request_type alias string && ml_request_type interface string && ml_request_type v6face string && ml_request_type account string && ml_request_type ua_type string || {
 		ml_error invalid_request 'invalid instance types'
 		return
@@ -791,7 +803,20 @@ ml_save_instance() {
 		ml_error internal_error 'configuration write failed'
 		return
 	}
-	if [ -n "$v6face" ]; then uci set "multilogin.$section.v6face=$v6face"; else uci -q delete "multilogin.$section.v6face"; fi || {
+	if [ -n "$v6face" ]; then
+		uci set "multilogin.$section.v6face=$v6face"
+	else
+		if section_listing=$(uci -q show "multilogin.$section" 2>/dev/null); then
+			if printf '%s\n' "$section_listing" | grep -Eq "^multilogin\\.$section\\.v6face="; then
+				uci -q delete "multilogin.$section.v6face"
+			else
+				grep_status=$?
+				[ "$grep_status" -eq 1 ] || false
+			fi
+		else
+			false
+		fi
+	fi || {
 		uci revert multilogin >/dev/null 2>&1 || :
 		ml_error internal_error 'configuration write failed'
 		return

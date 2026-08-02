@@ -402,11 +402,33 @@ function uciSectionEnumerationTests() {
   assert.match(collector, /status=\$\?[\s\S]*listing=''[\s\S]*return "\$status"/, 'section enumeration leaves captured UCI output in shell state');
 
   const normalize = shellFunctionBody(config, 'ml_normalize_section');
+  const anonymous = shellFunctionBody(config, 'ml_section_is_anonymous');
   const saveAccount = shellFunctionBody(config, 'ml_save_account');
+  const validText = shellFunctionBody(config, 'ml_valid_text');
+  const validUsername = shellFunctionBody(config, 'ml_valid_username');
   const saveInstance = shellFunctionBody(config, 'ml_save_instance');
+  assert.match(validText, /cr=\$\(printf '\\r'\)[\s\S]*nl=\$\(printf '\\nx'\)[\s\S]*nl=\$\{nl%x\}/, 'text validator does not preserve a literal newline while checking CR/LF');
+  assert.doesNotMatch(validText, /\$\(printf '\\n'\)/, 'text validator uses a command-substituted empty newline pattern');
+  assert.match(validUsername, /if printf '%s' "\$1" \| grep -q '\[\[:cntrl:\]\]'[\s\S]*return 1[\s\S]*return 0/, 'username validator rejects valid usernames because grep no-match falls through as failure');
+  const validatorScript = [
+    `ml_valid_text() {${validText}\n}`,
+    `ml_valid_username() {${validUsername}\n}`,
+    'case "$1" in text) ml_valid_text "$2" "$3" ;; username) ml_valid_username "$2" ;; esac',
+  ].join('\n');
+  const validate = (kind, value, limit = '') => spawnSync('sh', ['-c', validatorScript, 'phase7-validator', kind, value, limit], { encoding: 'utf8' });
+  for (const [kind, value, limit] of [
+    ['text', 'QEMU Test', 128], ['text', '含空格的别名', 128], ['text', 'a\tb', 128],
+    ['username', 'student001', ''], ['username', '含空格 用户', ''],
+  ]) assert.equal(validate(kind, value, limit).status, 0, `${kind} validator rejected valid text`);
+  for (const [kind, value, limit] of [
+    ['text', 'a\rb', 128], ['text', 'a\nb', 128], ['username', 'a\tb', ''],
+    ['username', '', ''], ['username', 'x'.repeat(257), ''],
+  ]) assert.notEqual(validate(kind, value, limit).status, 0, `${kind} validator accepted invalid text`);
+  pass('account text validators preserve ordinary/UTF-8 values and reject line/control/length failures');
   assert.match(config, /ml_next_section_name\(\)/, 'stable section allocator is absent');
   assert.match(config, /ml_section_is_anonymous\(\)/, 'normalization has no actual anonymous-section detector');
   assert.match(config, /uci -q -X show multilogin[\s\S]*uci -q show multilogin/, 'anonymous-section detector does not compare extended and ordinary UCI listings');
+  assert.match(anonymous, /if \(\$0 !~ \/\^multilogin\\\./, 'anonymous-section awk filters are not wrapped in BusyBox-compatible actions');
   assert.doesNotMatch(normalize, /case \$section in cfg\*\)/, 'normalization treats every cfg-prefixed name as anonymous');
   assert.match(normalize, /uci rename "multilogin\.\$section=\$target"/, 'anonymous sections are not normalized to named sections');
   assert.match(normalize, /ml_collect_sections instance[\s\S]*ml_normalize_section "\$reference" instance[\s\S]*uci rename "multilogin\.\$section=\$target"[\s\S]*uci set "multilogin\.\$normalized_reference\.account=\$target"/, 'account reference updates do not name instances before rewriting links');
@@ -417,6 +439,15 @@ function uciSectionEnumerationTests() {
   assert.doesNotMatch(saveInstance, /uci add multilogin instance/, 'instance save still depends on an unstable anonymous ID');
   assert.match(saveInstance, /ml_normalize_section "\$account" account/, 'instance save does not normalize legacy anonymous account references');
   assert.match(saveInstance, /normalized_changed[\s\S]*\[ "\$normalized_changed" != 1 \]/, 'instance no-change path ignores section normalization');
+  assert.match(saveInstance, /section_listing=\$\(uci -q show "multilogin\.\$section"/, 'optional IPv6 clearing does not fail closed when the section listing cannot be read');
+  assert.ok(saveInstance.includes('grep -Eq "^multilogin\\\\.$section\\\\.v6face="'), 'optional IPv6 clearing does not anchor exact option presence');
+  assert.match(saveInstance, /grep_status=\$\?[\s\S]*\[ "\$grep_status" -eq 1 \] \|\| false/, 'optional IPv6 clearing does not distinguish no-match from grep errors');
+  const adversarialListing = [
+    "multilogin.instance_1=instance",
+    "multilogin.instance_1.alias='valid multilogin.instance_1.v6face= alias'",
+  ].join('\n');
+  assert.equal(adversarialListing.split('\n').some((line) => /^multilogin\.instance_1\.v6face=/.test(line)), false,
+    'option-presence predicate matches a substring inside a valid alias');
   assert.match(saveInstance, /uci revert multilogin[\s\S]*ml_error not_found 'instance not found'/, 'instance validation can leak an uncommitted account normalization');
   assert.match(saveInstance, /section=\$\(ml_next_section_name instance\) \|\| \{[\s\S]*uci revert multilogin/, 'instance allocator failure can leak account normalization');
   assert.ok(saveInstance.indexOf('section=$(ml_next_section_name instance)') < saveInstance.indexOf('ml_normalize_section "$account" account'),

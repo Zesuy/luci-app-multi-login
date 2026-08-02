@@ -5,14 +5,40 @@ All notable changes to MultiLogin are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and release entries use the SemVer source version. OpenWrt package archives
 append their independent `PKG_RELEASE` build revision; for this candidate the
-24.10 SDK emits `3.0.0-rc.1-r10` and the APK-based 25.12 SDK emits
-`3.0.0_rc1-r10`. The APK spelling is a
+24.10 SDK emits `3.0.0-rc.1-r16` and the APK-based 25.12 SDK emits
+`3.0.0_rc1-r16`. The APK spelling is a
 deterministic package-manager projection; the source, tag, script, and
 changelog version remains `3.0.0-rc.1`.
 
 ## [3.0.0-rc.1] - 2026-08-03
 
 ### Fixed
+
+- Package revision 16 anchors optional `v6face` detection to the beginning of
+  a complete UCI option line. A valid alias containing the option-like text
+  can no longer trigger a false delete and rollback.
+
+- Package revision 15 makes blank `v6face` clearing fail closed using the
+  exact section listing. A missing option is a no-op, an existing option must
+  be deleted successfully, and section-read/grep/delete errors roll back.
+
+- Package revision 14 makes blank `v6face` clearing fail closed. Only UCI's
+  explicit missing-option status is ignored; read or delete errors now roll
+  back the locked transaction instead of reporting a false success.
+
+- Package revision 13 treats deletion of an already-absent optional IPv6 UCI
+  option as success. The previous instance save path rolled the whole locked
+  transaction back when `v6face` was blank on a new instance.
+
+- Package revision 12 wraps the generated-name UCI filters in explicit awk
+  actions. BusyBox awk rejects the previous bare `!~` pattern form, which
+  caused valid disabled instances to roll back with `configuration write failed`.
+
+- Package revision 11 fixes CR/LF validation in the configuration backend.
+  The previous revision constructed its newline pattern with command
+  substitution, which strips the trailing newline and rejected every account
+  and instance alias before any UCI write. The validator now preserves a
+  literal newline and has executable pure-logic regression coverage.
 
 - Package revision 10 preserves upgraded anonymous UCI account/instance
   sections, allocates stable names for new sections, keeps account references
