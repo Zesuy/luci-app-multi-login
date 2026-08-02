@@ -227,7 +227,7 @@ function confirmationAndAccessibilityTests() {
   const nativeButton = functionSource('nativeButton');
   assert.match(nativeButton, /E\('button'/, 'actions are not native buttons');
   assert.match(nativeButton, /'type':\s*'button'/, 'native action button has implicit submit semantics');
-  assert.match(nativeButton, /'disabled':\s*disabled/, 'native action button ignores disabled state');
+  assert.match(nativeButton, /'disabled':\s*disabledAttr\(disabled\)/, 'native action button does not omit false disabled attributes');
   assert.match(source, /E\('textarea'/, 'Custom editor is not a native textarea');
   assert.match(source, /'aria-live':\s*'polite'/, 'status feedback lacks aria-live');
   assert.match(source, /'aria-live':\s*'assertive'/, 'error feedback lacks assertive aria-live');

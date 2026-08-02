@@ -86,6 +86,7 @@ function compact(children) {
     return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
+function disabledAttr(value) { return value ? 'disabled' : null; }
 function summary(data, name) {
     return data && data[name] ? data[name] : emptySummary();
 }
@@ -142,7 +143,7 @@ function nativeButton(label, handler, disabled, style) {
     return E('button', {
         'class': 'btn cbi-button ' + (style || 'cbi-button-action'),
         'type': 'button',
-        'disabled': disabled,
+        'disabled': disabledAttr(disabled),
         'click': handler
     }, label);
 }
@@ -354,7 +355,7 @@ return view.extend({
             var draftMissing = !draftState.present;
             var disabled = state.busy || !state.info.ok || info.recovery_required;
             var managedDowngrade = E('label', { 'class': 'script-checkbox' }, [
-                E('input', { 'type': 'checkbox', 'name': 'allow-downgrade', 'disabled': disabled }),
+                E('input', { 'type': 'checkbox', 'name': 'allow-downgrade', 'disabled': disabledAttr(disabled) }),
                 E('span', {}, _('如适用，我明确同意激活较低版本的托管候选脚本。'))
             ]);
             var textarea = E('textarea', {
@@ -365,7 +366,7 @@ return view.extend({
                 'spellcheck': 'false',
                 'wrap': 'off',
                 'aria-describedby': 'custom-draft-help custom-root-warning',
-                'disabled': state.busy || draftLoadError
+                'disabled': disabledAttr(state.busy || draftLoadError)
             }, state.draftText);
 
             textarea.addEventListener('input', function () {

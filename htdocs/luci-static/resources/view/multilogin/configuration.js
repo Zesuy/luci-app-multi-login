@@ -21,9 +21,10 @@ function compact(children) {
     return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
+function disabledAttr(value) { return value ? 'disabled' : null; }
 function failed(message) { return { ok: false, code: 'internal_error', message: message || _('请求失败。'), data: {} }; }
 function button(label, handler, disabled, kind) {
-    return E('button', { 'class': 'btn cbi-button ' + (kind || 'cbi-button-action'), 'type': 'button', 'style': 'min-height:44px;margin:.2em', 'disabled': disabled, 'click': handler }, label);
+    return E('button', { 'class': 'btn cbi-button ' + (kind || 'cbi-button-action'), 'type': 'button', 'style': 'min-height:44px;margin:.2em', 'disabled': disabledAttr(disabled), 'click': handler }, label);
 }
 function input(id, label, value, type, help) {
     return E('div', { 'class': 'cbi-value' }, [

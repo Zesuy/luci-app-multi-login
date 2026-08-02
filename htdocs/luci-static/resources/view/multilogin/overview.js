@@ -12,12 +12,16 @@ function compact(children) {
     return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
+function disabledAttr(value) {
+    return value ? 'disabled' : null;
+}
+
 function button(label, click, disabled) {
     return E('button', {
         'class': 'btn cbi-button cbi-button-action',
         'type': 'button',
         'style': 'min-height:44px',
-        'disabled': disabled,
+        'disabled': disabledAttr(disabled),
         'click': click
     }, label);
 }

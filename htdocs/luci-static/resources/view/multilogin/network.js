@@ -12,8 +12,9 @@ function compact(children) {
     return children.filter(function (child) { return child !== null && child !== undefined; });
 }
 
+function disabledAttr(value) { return value ? 'disabled' : null; }
 function failure() { return { ok: false, code: 'internal_error', message: _('无法读取受管网络状态。'), data: {} }; }
-function button(label, click, disabled, kind) { return E('button', { class: 'btn cbi-button ' + (kind || 'cbi-button-action'), type: 'button', style: 'min-height:44px;margin:.2em', disabled: disabled, click: click }, label); }
+function button(label, click, disabled, kind) { return E('button', { class: 'btn cbi-button ' + (kind || 'cbi-button-action'), type: 'button', style: 'min-height:44px;margin:.2em', disabled: disabledAttr(disabled), click: click }, label); }
 function message(response) { return (response && response.message) || _('操作未完成，请重试。'); }
 
 return view.extend({
