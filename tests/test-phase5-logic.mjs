@@ -561,15 +561,16 @@ function recoveryAndOwnershipTests() {
 
 function jshnNounsetCompatibilityTests() {
   const backend = read(backendPath);
-  const initializer = 'JSON_PREFIX=${JSON_PREFIX-}\nJSON_UNSET=${JSON_UNSET-}';
-  const sourceAt = backend.indexOf('. /usr/share/libubox/jshn.sh || exit 1');
-  const initializerAt = backend.indexOf(initializer);
-  const overrideAt = backend.indexOf('json_init() {', sourceAt);
-  assert.ok(initializerAt >= 0 && initializerAt < sourceAt,
-    'script RPC backend does not initialize jshn state before sourcing under nounset');
-  assert.ok(overrideAt > sourceAt && backend.indexOf('JSON_UNSET=', overrideAt) > overrideAt,
-    'script RPC backend does not restore JSON_UNSET after every jshn cleanup');
-  pass('script RPC backend restores all jshn cleanup state under nounset after rpcd exec');
+  assert.doesNotMatch(backend, /^set -u$/m, 'script RPC backend forces third-party jshn into nounset');
+  assert.doesNotMatch(backend, /^JSON_(?:PREFIX|UNSET)=/m, 'script RPC backend carries jshn state shims');
+  assert.doesNotMatch(backend, /^json_init\(\) \{/m, 'script RPC backend overrides third-party json_init');
+  assert.match(backend, /ml_json_load\(\)[\s\S]{0,240}jshn -r "\$text"[\s\S]{0,120}json_load "\$text"/,
+    'script RPC backend does not preserve the native jshn parse status');
+  assert.doesNotMatch(backend, /^\s*json_get_keys\s+\S+\s*(?:\|\||;|$)/m,
+    'script RPC backend calls optional jshn json_get_keys argument unsafely');
+  assert.doesNotMatch(backend, /^\s*json_get_var\s+\S+\s+\S+\s*(?:\|\||;|$)/m,
+    'script RPC backend calls optional jshn json_get_var default unsafely');
+  pass('script RPC backend uses native jshn semantics with explicit optional arguments');
 }
 
 rpcMethodSchemaTests();

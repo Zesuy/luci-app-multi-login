@@ -1,9 +1,7 @@
 #!/bin/sh
 # Fixed Phase 5 script-state backend. Supported CLI: recover | rpc METHOD.
 # OpenWrt's BusyBox ash local extension is intentionally used.
-# shellcheck disable=SC2086,SC3043,SC3045
-set -u
-
+# shellcheck disable=SC2086,SC3043
 ML_DIR=/etc/multilogin
 ML_STATE_DIR=$ML_DIR/.script-state
 ML_STATE=$ML_STATE_DIR/state.json
@@ -32,24 +30,17 @@ ML_DISCARD_HELD=''
 . /usr/lib/multilogin/script-policy.sh || exit 1
 # shellcheck disable=SC1091
 . /usr/lib/multilogin/fs-metadata.sh || exit 1
-# rpcd exec does not preserve jshn's internal JSON_PREFIX/JSON_UNSET. jshn
-# json_init() dereferences both before assigning them, so create empty values
-# before sourcing under `set -u`.
-JSON_PREFIX=${JSON_PREFIX-}
-JSON_UNSET=${JSON_UNSET-}
 # shellcheck disable=SC1091
 . /usr/share/libubox/jshn.sh || exit 1
 
-# jshn's json_load() expands generated `json_init;` text. Its stock json_init
-# unsets JSON_UNSET during cleanup and therefore breaks the next json_add_*
-# under nounset. Restore the cleanup accumulator after every initialization.
-json_init() {
-	json_cleanup
-	export -n ${JSON_PREFIX}JSON_SEQ=0
-	export -- \
-		${JSON_PREFIX}JSON_CUR="J_V" \
-		${JSON_PREFIX}K_J_V=
-	JSON_UNSET=
+# OpenWrt's json_load() evaluates jshn output but does not propagate the
+# command's parse status. Validate with the same native jshn binary first so
+# malformed brace-delimited input cannot become an empty object.
+ml_json_load() {
+	local text
+	text=$1
+	jshn -r "$text" >/dev/null 2>&1 || return 1
+	json_load "$text"
 }
 
 ml_regular() {
@@ -311,7 +302,7 @@ ml_summary_matches_file() {
 
 ml_current_keys() {
 	local keys key sorted
-	json_get_keys keys || return 1
+	json_get_keys keys '' || return 1
 	sorted=''
 	if [ -n "$keys" ]; then
 		sorted=$(for key in $keys; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
@@ -332,13 +323,13 @@ ml_validate_summary_current() {
 	json_get_type type version && [ "$type" = string ] || return 1
 	json_get_type type api && [ "$type" = int ] || return 1
 	json_get_type type sha256 && [ "$type" = string ] || return 1
-	json_get_var present present
-	json_get_var status status
-	json_get_var source source
-	json_get_var mode mode
-	json_get_var version version
-	json_get_var api api
-	json_get_var hash sha256
+	json_get_var present present ''
+	json_get_var status status ''
+	json_get_var source source ''
+	json_get_var mode mode ''
+	json_get_var version version ''
+	json_get_var api api ''
+	json_get_var hash sha256 ''
 	case $present in
 	0 | false)
 		[ "$status" = none ] && [ "$source" = unknown ] && [ "$mode" = none ] && [ -z "$version" ] && [ "$api" = 0 ] && [ -z "$hash" ]
@@ -368,15 +359,15 @@ ml_validate_state_file() {
 	)
 	content=${content%x}
 	ml_trim_json_object "$content" || return 1
-	json_load "$content" >/dev/null 2>&1 || return 1
+	ml_json_load "$content" >/dev/null 2>&1 || return 1
 	keys=$(ml_current_keys) || return 1
 	[ "$keys" = 'active candidate custom generation last_known_good mode schema' ] || return 1
 	json_get_type type schema && [ "$type" = int ] || return 1
 	json_get_type type generation && [ "$type" = int ] || return 1
 	json_get_type type mode && [ "$type" = string ] || return 1
-	json_get_var schema schema
-	json_get_var generation generation
-	json_get_var mode mode
+	json_get_var schema schema ''
+	json_get_var generation generation ''
+	json_get_var mode mode ''
 	[ "$schema" = 1 ] && [ "$(ml_policy_generation "$generation" "$generation")" = ok ] || return 1
 	case $mode in managed | custom) ;; *) return 1 ;; esac
 	for slot in active candidate last_known_good custom; do
@@ -397,7 +388,7 @@ ml_validate_journal_file() {
 	)
 	content=${content%x}
 	ml_trim_json_object "$content" || return 1
-	json_load "$content" >/dev/null 2>&1 || return 1
+	ml_json_load "$content" >/dev/null 2>&1 || return 1
 	keys=$(ml_current_keys) || return 1
 	[ "$keys" = 'backup_sha256 generation operation previous_active schema selected_sha256 source state' ] || return 1
 	for type in schema generation; do
@@ -406,13 +397,13 @@ ml_validate_journal_file() {
 	for type in operation source selected_sha256 backup_sha256 state; do
 		json_get_type keys "$type" && [ "$keys" = string ] || return 1
 	done
-	json_get_var schema schema
-	json_get_var generation generation
-	json_get_var operation operation
-	json_get_var source source
-	json_get_var selected selected_sha256
-	json_get_var backup backup_sha256
-	json_get_var state state
+	json_get_var schema schema ''
+	json_get_var generation generation ''
+	json_get_var operation operation ''
+	json_get_var source source ''
+	json_get_var selected selected_sha256 ''
+	json_get_var backup backup_sha256 ''
+	json_get_var state state ''
 	[ "$schema" = 1 ] && [ "$(ml_policy_generation "$generation" "$generation")" = ok ] || return 1
 	case $operation in activate | rollback | restore) ;; *) return 1 ;; esac
 	case $source in candidate | custom | last_known_good | factory) ;; *) return 1 ;; esac
@@ -679,7 +670,7 @@ ml_get_typed() {
 	expected=$3
 	json_get_type actual "$key" || return 1
 	[ "$actual" = "$expected" ] || return 1
-	json_get_var "$destination" "$key" || return 1
+	json_get_var "$destination" "$key" '' || return 1
 	return 0
 }
 
@@ -687,8 +678,8 @@ ml_parse_request() {
 	local method keys sorted key boolean_value
 	method=$1
 	ml_trim_json_object "$ML_REQUEST" || return 1
-	json_load "$ML_REQUEST" >/dev/null 2>&1 || return 1
-	json_get_keys keys
+	ml_json_load "$ML_REQUEST" >/dev/null 2>&1 || return 1
+	json_get_keys keys ''
 	sorted=''
 	if [ -n "$keys" ]; then
 		sorted=$(for key in $keys; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
@@ -1016,12 +1007,12 @@ ml_run_self_test() {
 	)
 	content=${content%x}
 	ml_trim_json_object "$content" || return 1
-	json_load "$content" >/dev/null 2>&1 || return 1
-	json_get_var ok ok || return 1
-	json_get_var action action || return 1
-	json_get_var outcome outcome || return 1
-	json_get_var api api || return 1
-	json_get_var version version || return 1
+	ml_json_load "$content" >/dev/null 2>&1 || return 1
+	json_get_var ok ok '' || return 1
+	json_get_var action action '' || return 1
+	json_get_var outcome outcome '' || return 1
+	json_get_var api api '' || return 1
+	json_get_var version version '' || return 1
 	case $ok in true | 1) ;; *) return 1 ;; esac
 	[ "$action" = self-test ] && [ "$outcome" = self_test_pass ] && [ "$api" = 3 ] && [ "$version" = "$ML_META_VERSION" ]
 }
@@ -1132,12 +1123,12 @@ ml_run_status_validation() {
 	)
 	content=${content%x}
 	ml_trim_json_object "$content" || return 1
-	json_load "$content" >/dev/null 2>&1 || return 1
-	json_get_var ok ok || return 1
-	json_get_var action action || return 1
-	json_get_var outcome outcome || return 1
-	json_get_var api api || return 1
-	json_get_var version version || return 1
+	ml_json_load "$content" >/dev/null 2>&1 || return 1
+	json_get_var ok ok '' || return 1
+	json_get_var action action '' || return 1
+	json_get_var outcome outcome '' || return 1
+	json_get_var api api '' || return 1
+	json_get_var version version '' || return 1
 	case $ok in true | 1) ;; *) return 1 ;; esac
 	[ "$action" = status ] && [ "$api" = 3 ] && [ "$version" = "$ML_META_VERSION" ] || return 1
 	case $status:$outcome in 0:online | 1:offline)

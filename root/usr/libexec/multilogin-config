@@ -3,8 +3,7 @@
 # It is the only configuration/network helper called by rpcd or the legacy CLI.
 # BusyBox ash dynamic `ML_<field>` variables and deliberate compact checked
 # chains are used throughout this fixed dispatcher.
-# shellcheck disable=SC2015,SC2034,SC2086,SC2119,SC2120,SC2154,SC3043,SC3045
-set -u
+# shellcheck disable=SC2015,SC2034,SC2086,SC2119,SC2120,SC2154,SC3043
 LC_ALL=C
 export LC_ALL
 
@@ -21,26 +20,17 @@ ML_COMPAT_ERROR=0
 . "$ML_POLICY" || exit 1
 # shellcheck disable=SC1091
 . /usr/lib/multilogin/fs-metadata.sh || exit 1
-# OpenWrt's jshn json_init() reads these internal variables before assigning
-# them. rpcd execs this helper without preserving the handler shell's local
-# values, so initialize them under nounset before every v3 RPC can emit a
-# response.
-JSON_PREFIX=${JSON_PREFIX-}
-JSON_UNSET=${JSON_UNSET-}
 # shellcheck disable=SC1090
 . "$ML_JSHN" || exit 1
 
-# jshn's json_load() expands generated `json_init;` text. Its stock json_init
-# unsets JSON_UNSET during cleanup and therefore breaks the next json_add_*
-# under nounset. Keep the OpenWrt implementation's state setup but restore
-# the cleanup accumulator after every generated initialization call.
-json_init() {
-	json_cleanup
-	export -n ${JSON_PREFIX}JSON_SEQ=0
-	export -- \
-		${JSON_PREFIX}JSON_CUR="J_V" \
-		${JSON_PREFIX}K_J_V=
-	JSON_UNSET=
+# OpenWrt's json_load() evaluates jshn output but does not propagate the
+# command's parse status. Validate with the same native jshn binary first so
+# malformed brace-delimited input cannot become an empty object.
+ml_json_load() {
+	local text
+	text=$1
+	jshn -r "$text" >/dev/null 2>&1 || return 1
+	json_load "$text"
 }
 
 ml_cleanup() {
@@ -138,14 +128,14 @@ ml_state_parse() {
 	ml_secure_json_file "$file" || return 1
 	text=$(cat "$file" 2>/dev/null) || return 1
 	json_init
-	json_load "$text" || return 1
-	json_get_keys keys
+	ml_json_load "$text" || return 1
+	json_get_keys keys ''
 	keys=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
 	[ "$keys" = 'base_iface count firewall_networks firewall_zone generation mwan3_members mwan3_policy mwan3_sections network_sections schema' ] || return 1
-	json_get_var generation generation
-	json_get_var base base_iface
-	json_get_var count count
-	json_get_var schema schema
+	json_get_var generation generation ''
+	json_get_var base base_iface ''
+	json_get_var count count ''
+	json_get_var schema schema ''
 	[ "$schema" = 1 ] || return 1
 	ml_config_uint_range "$generation" 0 2147483647 && ml_config_uint_range "$count" 0 10 || return 1
 	if [ "$count" -eq 0 ]; then [ -z "$base" ] || return 1; else ml_config_iface "$base" || return 1; fi
@@ -169,13 +159,13 @@ ml_journal_parse() {
 	ml_secure_json_file "$ML_NET_JOURNAL" || return 1
 	text=$(cat "$ML_NET_JOURNAL" 2>/dev/null) || return 1
 	json_init
-	json_load "$text" || return 1
-	json_get_keys keys
+	ml_json_load "$text" || return 1
+	json_get_keys keys ''
 	keys=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
 	[ "$keys" = 'after before operation schema state' ] || return 1
-	json_get_var schema schema
-	json_get_var operation operation
-	json_get_var state state
+	json_get_var schema schema ''
+	json_get_var operation operation ''
+	json_get_var state state ''
 	[ "$schema" = 1 ] || return 1
 	case $operation in apply | remove) ;; *) return 1 ;; esac
 	case $state in prepared | network_committed | firewall_committed | mwan3_committed | services_reloaded | rollback_required) ;; *) return 1 ;; esac
@@ -208,11 +198,11 @@ ml_state_parse_value() {
 	# Parse in memory: the canonical generator makes all unknown keys, whitespace,
 	# duplicate keys, and noncanonical ownership relations fail closed.
 	json_init
-	json_load "$text" || return 1
-	json_get_var generation generation
-	json_get_var base base_iface
-	json_get_var count count
-	json_get_var schema schema
+	ml_json_load "$text" || return 1
+	json_get_var generation generation ''
+	json_get_var base base_iface ''
+	json_get_var count count ''
+	json_get_var schema schema ''
 	[ "$schema" = 1 ] || return 1
 	ml_config_uint_range "$generation" 0 2147483647 && ml_config_uint_range "$count" 0 10 || return 1
 	if [ "$count" -eq 0 ]; then [ -z "$base" ] || return 1; else ml_config_iface "$base" || return 1; fi
@@ -251,7 +241,7 @@ ml_add_owned_interfaces() {
 	local n
 	n=1
 	while [ "$n" -le "$ML_STATE_COUNT" ]; do
-		json_add_object
+		json_add_object ''
 		json_add_string name "ml3_if_$n"
 		json_add_string device "ml3_dev_$n"
 		json_add_int metric $((10 + n))
@@ -283,8 +273,8 @@ ml_parse_request() {
 	trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || return 1
 	case $trimmed in \{*\}) ;; *) return 1 ;; esac
 	json_init
-	json_load "$trimmed" || return 1
-	json_get_keys keys
+	ml_json_load "$trimmed" || return 1
+	json_get_keys keys ''
 	ML_REQUEST_KEYS=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
 }
 
@@ -298,7 +288,7 @@ ml_request_type() {
 	[ "$actual" = "$expected" ]
 }
 
-ml_req() { json_get_var "ML_$1" "$1"; }
+ml_req() { json_get_var "ML_$1" "$1" ''; }
 
 ml_valid_text() {
 	local value limit
@@ -423,7 +413,7 @@ ml_list_accounts() {
 		password=$(uci -q get "multilogin.$section.password")
 		count=0
 		for references in $(ml_collect_sections instance); do [ "$(uci -q get "multilogin.$references.account")" = "$section" ] && count=$((count + 1)); done
-		json_add_object
+		json_add_object ''
 		json_add_string section "$section"
 		json_add_string alias "$alias"
 		json_add_string username "$username"
@@ -552,7 +542,7 @@ ml_list_instances() {
 		if [ -n "$account" ]; then account_label=$(uci -q get "multilogin.$account.alias"); else account_label=''; fi
 		ua=$(uci -q get "multilogin.$section.ua_type")
 		ml_config_ua_type "$ua" || ua=pc
-		json_add_object
+		json_add_object ''
 		json_add_string section "$section"
 		json_add_string enabled "$enabled"
 		json_add_string alias "$alias"

@@ -331,15 +331,16 @@ function docsTests() {
 }
 
 function jshnNounsetCompatibilityTests() {
-  const initializer = 'JSON_PREFIX=${JSON_PREFIX-}\nJSON_UNSET=${JSON_UNSET-}';
-  const sourceAt = config.indexOf('. "$ML_JSHN" || exit 1');
-  const initializerAt = config.indexOf(initializer);
-  const overrideAt = config.indexOf('json_init() {', sourceAt);
-  assert.ok(initializerAt >= 0 && initializerAt < sourceAt,
-    'configuration RPC backend does not initialize jshn state before sourcing under nounset');
-  assert.ok(overrideAt > sourceAt && config.indexOf('JSON_UNSET=', overrideAt) > overrideAt,
-    'configuration RPC backend does not restore JSON_UNSET after every jshn cleanup');
-  pass('configuration RPC backend restores all jshn cleanup state under nounset after rpcd exec');
+  assert.doesNotMatch(config, /^set -u$/m, 'configuration RPC backend forces third-party jshn into nounset');
+  assert.doesNotMatch(config, /^JSON_(?:PREFIX|UNSET)=/m, 'configuration RPC backend carries jshn state shims');
+  assert.doesNotMatch(config, /^json_init\(\) \{/m, 'configuration RPC backend overrides third-party json_init');
+  assert.match(config, /ml_json_load\(\)[\s\S]{0,240}jshn -r "\$text"[\s\S]{0,120}json_load "\$text"/,
+    'configuration RPC backend does not preserve the native jshn parse status');
+  assert.doesNotMatch(config, /^\s*json_get_keys\s+\S+\s*(?:\|\||;|$)/m,
+    'configuration RPC backend calls optional jshn json_get_keys argument unsafely');
+  assert.doesNotMatch(config, /^\s*json_get_var\s+\S+\s+\S+\s*(?:\|\||;|$)/m,
+    'configuration RPC backend calls optional jshn json_get_var default unsafely');
+  pass('configuration RPC backend uses native jshn semantics with explicit optional arguments');
 }
 
 rpcSurfaceTests();

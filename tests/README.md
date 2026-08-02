@@ -46,3 +46,8 @@ prepared IPK/APK fixtures enforce exact dependency
 and payload manifests, file modes, release-line filenames, checksums, and APK
 lifecycle-script embedding, including negative extra-file/dependency cases.
 They are never installed or executed, and no QEMU/router behavior is emulated.
+
+The package-scope SDK job also runs `tests/test-jshn-contract.mjs` against the
+checked-out SDK's real `jshn.sh`/`jshn` and host BusyBox `ash`. This is a narrow
+library contract check (normal, missing, malformed, nested, repeated-init, and
+JSON-envelope paths), not an OpenWrt rootfs or service simulation.

@@ -92,6 +92,10 @@ function workflowPolicyTests() {
   assert.match(sdk, /scripts\/feeds update base packages luci routing/,
     'SDK workflow omits the release-matched base feed that supplies Lua/ucode/rpcd definitions');
   assert.match(sdk, /umask 022[\s\S]{0,180}timeout 120s make defconfig[\s\S]{0,120}timeout 1200s make package\/luci-app-multilogin\/compile -j2 V=s/);
+  assert.match(sdk, /MULTILOGIN_REQUIRE_JSHN:\s*"1"[\s\S]{0,260}test-jshn-contract\.mjs/,
+    'SDK workflow does not execute the real JSHN contract before compiling');
+  assert.match(sdk, /\bbusybox\b[\s\S]{0,120}\bnodejs\b/,
+    'SDK workflow does not install the host tools required by the JSHN contract');
   assert.match(sdk, /--connect-timeout 15 --max-time 300/);
 
   const release = sources['.github/workflows/release.yml'];

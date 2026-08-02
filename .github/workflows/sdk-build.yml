@@ -53,8 +53,10 @@ jobs:
             file \
             gawk \
             gettext \
+            busybox \
             git \
             libncurses-dev \
+            nodejs \
             python3 \
             rsync \
             unzip \
@@ -97,6 +99,18 @@ jobs:
           tar --extract --file "$SDK_ARCHIVE" --directory "$SDK_ROOT" --strip-components=1
           test -x "$SDK_ROOT/scripts/feeds"
           test -f "$SDK_ROOT/include/toplevel.mk"
+
+      - name: Verify real SDK JSHN contract
+        working-directory: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}
+        env:
+          MULTILOGIN_JSHN_ROOT: ${{ runner.temp }}/multilogin-sdk-${{ matrix.sdk_version }}/staging_dir/host
+          MULTILOGIN_BUSYBOX: /usr/bin/busybox
+          MULTILOGIN_REQUIRE_JSHN: "1"
+        run: |
+          set -eu
+          test -f "$MULTILOGIN_JSHN_ROOT/share/libubox/jshn.sh"
+          test -x "$MULTILOGIN_JSHN_ROOT/bin/jshn"
+          timeout 30s node "$GITHUB_WORKSPACE/tests/test-jshn-contract.mjs"
 
       - name: Integrate required OpenWrt package feeds
         env:
