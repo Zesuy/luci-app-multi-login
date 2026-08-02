@@ -220,7 +220,7 @@ function rpcdRefreshLifecycleTests() {
   const luciRefresh = migration.match(/ml_refresh_luci\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
   assert.match(luciRefresh, /ml_live_root \|\| return 0/, 'LuCI cache refresh can run in an install root');
   assert.match(luciRefresh, /\/tmp\/luci-indexcache\.\*/, 'LuCI cache refresh does not target only its index cache');
-  assert.match(luciRefresh, /\[ -f "\$cache" \] && \[ ! -L "\$cache" \]/, 'LuCI cache refresh does not reject unsafe cache paths');
+  assert.match(luciRefresh, /if \[ ! -f "\$ML_LUCI_CACHE" \] \|\| \[ -L "\$ML_LUCI_CACHE" \]/, 'LuCI cache refresh does not reject unsafe cache paths');
   const postinst = migration.match(/ml_postinst\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
   const restoredAt = postinst.indexOf('ml_restore_service || return 1');
   const stateAt = postinst.indexOf('ml_set_state complete || return 1');

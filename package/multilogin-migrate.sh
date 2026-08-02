@@ -230,10 +230,11 @@ ml_refresh_rpcd() {
 # and newly installed views are not served from a stale tree.
 ml_refresh_luci() {
 	ml_live_root || return 0
-	local cache
-	for cache in /tmp/luci-indexcache.*; do
-		[ -f "$cache" ] && [ ! -L "$cache" ] || continue
-		rm -f "$cache" || return 1
+	for ML_LUCI_CACHE in /tmp/luci-indexcache.*; do
+		if [ ! -f "$ML_LUCI_CACHE" ] || [ -L "$ML_LUCI_CACHE" ]; then
+			continue
+		fi
+		rm -f "$ML_LUCI_CACHE" || return 1
 	done
 }
 
