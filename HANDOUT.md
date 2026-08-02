@@ -8,7 +8,7 @@ This handout is the compact restart context for future Codex tasks in this works
 
 - Repository: `luci-app-multi-login`
 - Current branch: `codex/fix-release-checksum`
-- Latest working-tree fix: r16 validator/BusyBox awk/v6face fail-closed fixes (commit pending)
+- Latest committed fix: `89ff623 Fix QEMU configuration persistence regressions`
 - Target product: MultiLogin v3, `v3.0.0-rc.1`
 - Current package revision: `r16`
 - Execution plan: `dev/plan/multilogin-v3.md`
