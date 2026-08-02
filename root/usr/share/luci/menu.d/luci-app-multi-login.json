@@ -12,29 +12,42 @@
 		}
 	},
 	"admin/services/multilogin/overview": {
-		"title": "概览",
+		"title": "仪表盘",
 		"order": 1,
 		"action": { "type": "view", "path": "multilogin/overview" }
 	},
 	"admin/services/multilogin/configuration": {
-		"title": "配置",
+		"title": "登录管理",
 		"order": 2,
 		"action": { "type": "view", "path": "multilogin/configuration" }
 	},
 	"admin/services/multilogin/network": {
-		"title": "网络",
+		"title": "网络资源",
 		"order": 3,
 		"action": { "type": "view", "path": "multilogin/network" }
 	},
-	"admin/services/multilogin/scripts": {
-		"title": "脚本",
+	"admin/services/multilogin/maintenance": {
+		"title": "维护",
 		"order": 4,
+		"action": { "type": "alias", "path": "admin/services/multilogin/maintenance/troubleshooting" }
+	},
+	"admin/services/multilogin/maintenance/troubleshooting": {
+		"title": "故障排查",
+		"order": 1,
+		"action": { "type": "view", "path": "multilogin/diagnostics" }
+	},
+	"admin/services/multilogin/maintenance/scripts": {
+		"title": "脚本维护",
+		"order": 2,
 		"action": { "type": "view", "path": "multilogin/script" }
 	},
+	"admin/services/multilogin/scripts": {
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/maintenance/scripts" }
+	},
 	"admin/services/multilogin/diagnostics": {
-		"title": "诊断",
-		"order": 5,
-		"action": { "type": "view", "path": "multilogin/diagnostics" }
+		"hidden": true,
+		"action": { "type": "alias", "path": "admin/services/multilogin/maintenance/troubleshooting" }
 	},
 	"admin/services/multilogin/settings": {
 		"hidden": true,
@@ -50,10 +63,10 @@
 	},
 	"admin/services/multilogin/script": {
 		"hidden": true,
-		"action": { "type": "alias", "path": "admin/services/multilogin/scripts" }
+		"action": { "type": "alias", "path": "admin/services/multilogin/maintenance/scripts" }
 	},
 	"admin/services/multilogin/log": {
 		"hidden": true,
-		"action": { "type": "alias", "path": "admin/services/multilogin/diagnostics" }
+		"action": { "type": "alias", "path": "admin/services/multilogin/maintenance/troubleshooting" }
 	}
 }

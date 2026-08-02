@@ -484,6 +484,107 @@
 	margin: 0;
 }
 
+.ml-dashboard-conclusion {
+	border-inline-start: .35rem solid var(--ml-primary);
+}
+
+.ml-dashboard-conclusion .ml-section__header {
+	align-items: center;
+}
+
+.ml-dashboard-conclusion__text {
+	max-width: 68ch;
+	margin: 0;
+	line-height: 1.55;
+}
+
+.ml-dashboard-blockers__list {
+	display: grid;
+	gap: var(--ml-space-3);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.ml-dashboard-blocker {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--ml-space-3);
+	min-width: 0;
+	padding: var(--ml-space-3);
+	background: var(--ml-warning-surface);
+	border: 1px solid color-mix(in srgb, var(--ml-warning) 35%, var(--ml-border));
+	border-radius: .35rem;
+	line-height: 1.5;
+}
+
+.ml-dashboard-blocker > :last-child {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.ml-dashboard-blockers__clear {
+	margin: 0;
+	color: var(--ml-text-muted);
+	line-height: 1.55;
+}
+
+.ml-dashboard-primary {
+	background: color-mix(in srgb, var(--ml-primary) 7%, var(--ml-surface));
+}
+
+.ml-dashboard-service__actions {
+	align-items: stretch;
+}
+
+.ml-dashboard-service__actions .ml-button {
+	flex: 1 1 10rem;
+}
+
+.ml-dashboard-recovery {
+	background: var(--ml-surface-muted);
+}
+
+.ml-subnav {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--ml-space-2);
+	margin: 0 0 var(--ml-space-4);
+	padding: 0;
+}
+
+.ml-subnav__link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 44px;
+	padding: 0 var(--ml-space-4);
+	border: 1px solid var(--ml-border);
+	border-radius: .35rem;
+	background: var(--ml-surface-muted);
+	color: inherit;
+	text-decoration: none;
+	touch-action: manipulation;
+}
+
+.ml-subnav__link:hover,
+.ml-subnav__link:focus-visible,
+.ml-subnav__link--active {
+	border-color: var(--ml-primary);
+	color: var(--ml-primary);
+	background: var(--ml-surface);
+}
+
+@media (max-width: 600px) {
+	.ml-subnav {
+		gap: var(--ml-space-2);
+	}
+
+	.ml-subnav__link {
+		flex: 1 1 10rem;
+	}
+}
+
 .multilogin-script-manager .script-grid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -309,17 +309,70 @@ function aclAndMenuTests() {
   for (const name of ['save_settings', 'save_account', 'delete_account', 'save_instance', 'delete_instance', 'service_action', 'clear_logs', 'quick_setup', 'remove_auto', 'network_recover', 'test_instance', 'logout_instance']) assert.ok(writeMethods.has(name), `missing write ${name}`);
   for (const name of ['test_instance', 'logout_instance', 'save_account', 'delete_account', 'quick_setup', 'remove_auto']) assert.equal(readMethods.has(name), false, `mutator ${name} has read grant`);
   const menu = JSON.parse(read(menuPath));
-  const routes = Object.keys(menu).filter((route) => route.startsWith('admin/services/multilogin/')).map((route) => route.split('/').at(-1));
-  assert.deepEqual(routes.filter((route) => ['overview', 'configuration', 'network', 'scripts', 'diagnostics'].includes(route)).sort(), ['configuration', 'diagnostics', 'network', 'overview', 'scripts']);
+  const visibleRoutes = Object.entries(menu)
+    .filter(([route, entry]) => route.startsWith('admin/services/multilogin/') && entry.hidden !== true)
+    .map(([route]) => route)
+    .sort();
+  assert.deepEqual(visibleRoutes, [
+    'admin/services/multilogin/configuration',
+    'admin/services/multilogin/maintenance',
+    'admin/services/multilogin/maintenance/scripts',
+    'admin/services/multilogin/maintenance/troubleshooting',
+    'admin/services/multilogin/network',
+    'admin/services/multilogin/overview',
+  ], 'visible navigation does not match the dashboard/login/network/maintenance IA');
+  assert.equal(menu['admin/services/multilogin/maintenance']?.action?.type, 'alias', 'maintenance parent is not an alias');
+  assert.equal(menu['admin/services/multilogin/maintenance']?.action?.path,
+    'admin/services/multilogin/maintenance/troubleshooting', 'maintenance parent targets troubleshooting');
+  assert.equal(menu['admin/services/multilogin/maintenance/troubleshooting']?.action?.type, 'view');
+  assert.equal(menu['admin/services/multilogin/maintenance/troubleshooting']?.action?.path, 'multilogin/diagnostics');
+  assert.equal(menu['admin/services/multilogin/maintenance/scripts']?.action?.type, 'view');
+  assert.equal(menu['admin/services/multilogin/maintenance/scripts']?.action?.path, 'multilogin/script');
+  assert.equal(menu['admin/services/multilogin/configuration']?.title, '登录管理');
+  assert.equal(menu['admin/services/multilogin/network']?.title, '网络资源');
+  assert.equal(menu['admin/services/multilogin/overview']?.title, '仪表盘');
   assert.equal(JSON.stringify(menu).includes('services/multilogin.png'), false, 'dangling menu icon remains');
-  for (const [legacy, target] of Object.entries({ settings: 'configuration', accounts: 'configuration', interfaces: 'network', script: 'scripts', log: 'diagnostics' })) {
+  for (const [legacy, target] of Object.entries({
+    settings: 'configuration', accounts: 'configuration', interfaces: 'network',
+    scripts: 'maintenance/scripts', diagnostics: 'maintenance/troubleshooting',
+    script: 'maintenance/scripts', log: 'maintenance/troubleshooting'
+  })) {
     const entry = menu[`admin/services/multilogin/${legacy}`];
     assert.equal(entry?.hidden, true, `${legacy} compatibility alias is not hidden`);
     assert.equal(Object.hasOwn(entry ?? {}, 'title'), false, `${legacy} compatibility alias still exposes a menu title on LuCI 23.05`);
     assert.equal(entry?.action?.type, 'alias', `${legacy} compatibility route loads an old view`);
     assert.equal(entry?.action?.path, `admin/services/multilogin/${target}`, `${legacy} alias targets wrong route`);
   }
-  pass('ACL negative grants and five-route navigation surface');
+  const overview = read(path.join(viewDirectory, 'overview.js'));
+  const configuration = read(path.join(viewDirectory, 'configuration.js'));
+  const network = read(path.join(viewDirectory, 'network.js'));
+  const diagnostics = read(path.join(viewDirectory, 'diagnostics.js'));
+  const script = read(path.join(viewDirectory, 'script.js'));
+  assert.match(overview, /method:\s*['"]service_action['"]/);
+  assert.match(overview, /params:\s*\[['"]action['"]\]/);
+  assert.match(overview, /function runServiceAction\(/);
+  assert.match(overview, /callServiceAction\(entry\.action\)/);
+  for (const action of ['start', 'stop', 'restart', 'enable', 'disable'])
+    assert.match(overview, new RegExp(`action:\\s*['"]${action}['"]`), `overview misses ${action} service action`);
+  for (const heading of ['overview-conclusion-heading', 'overview-blockers-heading', 'overview-completeness-heading', 'overview-primary-heading', 'overview-service-heading', 'overview-recovery-heading'])
+    assert.match(overview, new RegExp(heading), `overview misses ${heading} IA section`);
+  const loadSource = overview.slice(overview.indexOf('load:'), overview.indexOf('render:'));
+  assert.doesNotMatch(loadSource, /callServiceAction\(/, 'overview load path writes service state');
+  assert.doesNotMatch(configuration, /method:\s*['"]service_action['"]/, 'configuration retains service action RPC after IA move');
+  assert.match(overview, /visibleServiceActions\s*=\s*serviceActions\.filter/, 'overview does not centralize the primary start affordance');
+  for (const source of [diagnostics, script]) {
+    assert.match(source, /function maintenanceNav\(active\)/, 'maintenance page lacks its task sub-navigation');
+    assert.match(source, /maintenance\/troubleshooting/);
+    assert.match(source, /maintenance\/scripts/);
+    assert.match(source, /aria-current/);
+  }
+  assert.match(network, /function confirmRecovery\(\)/, 'network recovery has no dedicated confirmation path');
+  assert.match(network, /写入 UCI[\s\S]{0,120}commit[\s\S]{0,120}reload network[\s\S]{0,120}firewall[\s\S]{0,120}mwan3/,
+    'network recovery confirmation does not describe its write/reload risk');
+  assert.match(network, /button\(_\('执行固定恢复检查'\), confirmRecovery,[\s\S]{0,120}cbi-button-negative/,
+    'network recovery action is not visibly destructive or confirmation-gated');
+  assert.doesNotMatch(network, /执行固定恢复检查'\)[\s\S]{0,80}run\(callRecover/, 'network recovery bypasses confirmation');
+  pass('ACL grants, dashboard/login/network/maintenance navigation, recovery safety, and Overview service IA');
 }
 
 function docsTests() {
