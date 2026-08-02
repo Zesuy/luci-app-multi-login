@@ -141,7 +141,7 @@ function actionSuccess(label, response) {
 
 function nativeButton(label, handler, disabled, style) {
     return E('button', {
-        'class': 'btn cbi-button ' + (style || 'cbi-button-action'),
+        'class': 'btn cbi-button ml-button ' + (style || 'cbi-button-action'),
         'type': 'button',
         'disabled': disabledAttr(disabled),
         'click': handler
@@ -174,7 +174,7 @@ return view.extend({
             feedback: initialFailure,
             feedbackKind: initialFailure ? 'error' : 'status'
         };
-        var root = E('div', { 'class': 'cbi-map multilogin-script-manager', 'aria-busy': 'false' });
+        var root = E('div', { 'class': 'cbi-map multilogin-script-manager ml-page ml-page--script', 'aria-busy': 'false' });
         var feedback = E('div', { 'class': 'script-feedback', 'aria-live': 'polite', 'role': 'status' });
         var alert = E('div', { 'class': 'alert-message', 'aria-live': 'assertive', 'role': 'alert' });
         var content = E('div');
@@ -376,9 +376,9 @@ return view.extend({
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
 
             content.replaceChildren.apply(content, compact([
-                E('div', { 'class': 'cbi-section' }, compact([
+                E('div', { 'class': 'cbi-section ml-section ml-card' }, compact([
                     E('h3', {}, _('脚本管理器')),
-                    E('p', { 'class': 'cbi-section-descr' }, _('管理固定更新通道或独立的自定义草稿。所有更改都不会直接编辑正在运行的脚本。')),
+                    E('p', { 'class': 'cbi-section-descr' }, _('管理固定更新通道或独立的自定义草稿。login_control.bash 由软件包管理；远程更新只允许替换 cqu-portal.sh，所有更改都不会直接编辑正在运行的脚本。')),
                     (!state.info.ok || info.recovery_required || draftLoadError) ? E('div', { 'class': 'alert-message', 'role': 'alert' }, [
                         E('p', {}, info.recovery_required ? actionError({ code: 'recovery_required' }) :
                             (!state.info.ok ? actionError(state.info) : actionError(state.draft))),
@@ -495,6 +495,7 @@ return view.extend({
             setFeedback(state.feedbackKind, state.feedback);
         }
 
+        root.appendChild(E('link', { rel: 'stylesheet', href: L.resource('view/multilogin/multi-login.css') }));
         root.appendChild(E('style', {}, [
             '.multilogin-script-manager { max-width: 72rem; min-width: 0; }',
             '.multilogin-script-manager .script-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1rem; min-width: 0; }',

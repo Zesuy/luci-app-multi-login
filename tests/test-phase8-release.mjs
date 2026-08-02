@@ -291,6 +291,7 @@ function createArtifactFixture(label = 'valid', options = {}) {
     ['0755', 'usr/libexec/multilogin-script'], ['0755', 'usr/libexec/multilogin-config'],
     ['0644', 'usr/share/luci/menu.d/luci-app-multi-login.json'], ['0644', 'usr/share/rpcd/acl.d/luci-app-multi-login.json'],
     ...['overview', 'configuration', 'network', 'script', 'diagnostics'].map((view) => ['0644', `www/luci-static/resources/view/multilogin/${view}.js`]),
+    ['0644', 'www/luci-static/resources/view/multilogin/multi-login.css'],
   ];
   for (const [mode, relative] of payloads) {
     if (relative === options.omit) continue;
@@ -326,6 +327,7 @@ const packagePayloads = [
   ['0755', 'usr/libexec/multilogin-script'], ['0755', 'usr/libexec/multilogin-config'],
   ['0644', 'usr/share/luci/menu.d/luci-app-multi-login.json'], ['0644', 'usr/share/rpcd/acl.d/luci-app-multi-login.json'],
   ...['overview', 'configuration', 'network', 'script', 'diagnostics'].map((view) => ['0644', `www/luci-static/resources/view/multilogin/${view}.js`]),
+  ['0644', 'www/luci-static/resources/view/multilogin/multi-login.css'],
 ];
 
 function createApkArtifactFixture(label = 'valid-apk', options = {}) {

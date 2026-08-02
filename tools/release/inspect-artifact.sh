@@ -194,7 +194,7 @@ if [ -n "$APK" ]; then
 		'0755 usr/lib/multilogin/cqu-portal.factory.sh' '0644 usr/lib/multilogin/script-policy.sh' '0644 usr/lib/multilogin/config-policy.sh' '0644 usr/lib/multilogin/fs-metadata.sh' \
 		'0755 usr/libexec/rpcd/multilogin' '0755 usr/libexec/multilogin-script' '0755 usr/libexec/multilogin-config' \
 		'0644 usr/share/luci/menu.d/luci-app-multi-login.json' '0644 usr/share/rpcd/acl.d/luci-app-multi-login.json' \
-		'0644 www/luci-static/resources/view/multilogin/overview.js' '0644 www/luci-static/resources/view/multilogin/configuration.js' '0644 www/luci-static/resources/view/multilogin/network.js' '0644 www/luci-static/resources/view/multilogin/script.js' '0644 www/luci-static/resources/view/multilogin/diagnostics.js' \
+		'0644 www/luci-static/resources/view/multilogin/overview.js' '0644 www/luci-static/resources/view/multilogin/configuration.js' '0644 www/luci-static/resources/view/multilogin/network.js' '0644 www/luci-static/resources/view/multilogin/script.js' '0644 www/luci-static/resources/view/multilogin/diagnostics.js' '0644 www/luci-static/resources/view/multilogin/multi-login.css' \
 		'0644 lib/apk/packages/luci-app-multilogin.conffiles' '0644 lib/apk/packages/luci-app-multilogin.conffiles_static' '0644 lib/apk/packages/luci-app-multilogin.list'; do
 		mode=${spec%% *}
 		file=${spec#* }
@@ -337,6 +337,7 @@ require_payload 0644 www/luci-static/resources/view/multilogin/configuration.js
 require_payload 0644 www/luci-static/resources/view/multilogin/network.js
 require_payload 0644 www/luci-static/resources/view/multilogin/script.js
 require_payload 0644 www/luci-static/resources/view/multilogin/diagnostics.js
+require_payload 0644 www/luci-static/resources/view/multilogin/multi-login.css
 
 printf '%s\n' './' >>"$TEMP_ROOT/expected-data-list"
 LC_ALL=C sort -u "$TEMP_ROOT/expected-data-list" >"$TEMP_ROOT/expected-data-list.sorted"

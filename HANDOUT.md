@@ -10,7 +10,7 @@ This handout is the compact restart context for future Codex tasks in this works
 - Current branch: `codex/fix-release-checksum`
 - Latest committed fix: `89ff623 Fix QEMU configuration persistence regressions`
 - Target product: MultiLogin v3, `v3.0.0-rc.1`
-- Current package revision: `r16`
+- Current package revision: `r17`
 - Execution plan: `dev/plan/multilogin-v3.md`
 - Phase status: Phase 9 remains blocked pending explicit real-device/portal authorization.
 
@@ -33,13 +33,13 @@ The source workflow was cloned to a temporary directory from `BruceLanLan/sol-lu
 
 ## Latest fixes
 
-LuCI 23.05 `E()` serializes non-null attributes with `setAttribute()`. Passing `disabled: false` therefore created `disabled="false"`, disabling every button. The five MultiLogin views now omit the attribute when idle and emit it only for busy/recovery states. The backend now enumerates legacy anonymous UCI sections, preserves named `cfg_*` sections, creates new account/instance sections with stable names, names referenced anonymous instances before rewriting account links, and rolls back failed normalization transactions. The current package revision is r16.
+LuCI 23.05 `E()` serializes non-null attributes with `setAttribute()`. Passing `disabled: false` therefore created `disabled="false"`, disabling every button. The five MultiLogin views now omit the attribute when idle and emit it only for busy/recovery states. The backend now enumerates legacy anonymous UCI sections, preserves named `cfg_*` sections, creates new account/instance sections with stable names, names referenced anonymous instances before rewriting account links, and rolls back failed normalization transactions. Package revision r17 adds a shared visual layer and page-specific hierarchy without changing those persistence and safety boundaries.
 
-The r10 audit also makes the controller enumerate generated UCI instance names with `uci -X`, maps local portal failures to the valid `internal_error/internal` envelope, and updates the release/changelog/device-acceptance candidate identity to r10. QEMU then exposed three runtime blockers: r10's command substitution stripped the newline used by `ml_valid_text()`; after r11 fixed that, BusyBox awk rejected the bare `!~` pattern used for section identity; after r12 fixed that, deleting an absent blank `v6face` option returned nonzero and rolled back instance creation. r13 made absent deletion idempotent; Sol rejected its unconditional ignore and then r15's unanchored match; r16 now anchors exact section option lines and fails closed on all real errors.
+The r10 audit also makes the controller enumerate generated UCI instance names with `uci -X`, maps local portal failures to the valid `internal_error/internal` envelope, and updates the release/changelog/device-acceptance candidate identity to r10. QEMU then exposed three runtime blockers: r10's command substitution stripped the newline used by `ml_valid_text()`; after r11 fixed that, BusyBox awk rejected the bare `!~` pattern used for section identity; after r12 fixed that, deleting an absent blank `v6face` option returned nonzero and rolled back instance creation. r13 made absent deletion idempotent; Sol rejected its unconditional ignore and then r15's unanchored match; r16 now anchors exact section option lines and fails closed on all real errors. Package revision r17 adds the shared LuCI visual layer and page-specific hierarchy without changing the fixed RPC/UCI/service/portal boundaries.
 
 ## Validation evidence
 
-The r10 bounded local runner passed 16 checks; four optional tools were unavailable locally. QEMU reproduced account rejection on r10, then instance rollback on r11 and r12; Sol's independent review returned `BLOCK` on the first validator defect and identified the subsequent fail-open/substring defects. r16 now passes executable Phase 7 `16/16`, full runner `16` with four optional tooling skips, controller `19/19`, portal `9/9`, version matrix, and read-only IPK inspection. The 24.10.8 SDK staging build produced IPK SHA-256 `39721a9bb9134284d627925ae5edc04c9a0126bf14f4028a07fc40d2d6362396`; QEMU installed it, persisted the account/disabled instance and two virtual network/mwan3 resources, accepted an adversarial alias, and cleared an existing v6face on fresh readback. No Portal request was made.
+The r10 bounded local runner passed 16 checks; four optional tools were unavailable locally. QEMU reproduced account rejection on r10, then instance rollback on r11 and r12; Sol's independent review returned `BLOCK` on the first validator defect and identified the subsequent fail-open/substring defects. The r17 source now passes executable Phase 7 `16/16`, full runner `16` with four optional tooling skips, controller `19/19`, portal `9/9`, version matrix, and read-only IPK inspection. A clean 24.10.8 SDK staging build produced `luci-app-multilogin_3.0.0-rc.1-r17_all.ipk` with SHA-256 `7a7571660666b18dd2ac9611c1973b85c6dfa3d5079a6ca4eecc10bf16f1a1d7`; the archive contains the shared CSS and all five current view files. Sol's independent UI/product review returned `PASS`. No Portal request was made.
 
 ## Next task checklist
 
@@ -48,5 +48,5 @@ The r10 bounded local runner passed 16 checks; four optional tools were unavaila
 3. Choose `LUNA_LOCAL` unless there are independent disjoint packets or a genuine high-impact decision.
 4. Run only the bounded validation appropriate to the changed files.
 5. Record accepted changes, evidence, decisions, risks, and deferred manual items in the execution plan.
-6. For a fresh session, use the retained r16 artifact/checksum and repeat only the explicitly authorized Phase 9 device cells. The disposable QEMU smoke and r16 artifact evidence are complete; keep real-device and Portal actions separately authorized.
+6. For a fresh session, use the retained r17 artifact/checksum and repeat only the explicitly authorized Phase 9 device cells. The disposable QEMU smoke and r16 behavior evidence remain valid; keep real-device and Portal actions separately authorized.
 7. Do not push, release, install packages, mutate a real device, or perform portal login/logout without explicit authorization.
