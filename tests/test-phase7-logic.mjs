@@ -381,6 +381,19 @@ function jshnNounsetCompatibilityTests() {
   pass('configuration RPC backend uses native jshn semantics with explicit optional arguments');
 }
 
+function rpcdSessionMetadataTests() {
+  const script = read(path.join(repository, 'root/usr/libexec/multilogin-script'));
+  assert.match(config, /ubus_rpc_session/, 'configuration backend does not account for rpcd session metadata');
+  assert.match(config, /ubus_rpc_session\)[\s\S]{0,180}ml_request_type[^\n]*string/, 'configuration backend does not type-check rpcd session metadata');
+  assert.match(config, /filtered="\$filtered\$\{filtered:\+ \}\$key"/, 'configuration backend does not rebuild business fields after metadata filtering');
+  assert.ok(config.includes("ML_REQUEST_KEYS=$(printf '%s\\n' $filtered | LC_ALL=C sort"),
+    'configuration backend does not canonicalize filtered business-field order');
+  assert.match(script, /ubus_rpc_session/, 'script backend does not account for rpcd session metadata');
+  assert.match(script, /ubus_rpc_session\)[\s\S]{0,200}ml_get_typed[^\n]*string/, 'script backend does not type-check rpcd session metadata');
+  assert.match(script, /filtered="\$filtered\$\{filtered:\+ \}\$key"/, 'script backend does not rebuild business fields after metadata filtering');
+  pass('rpcd-injected ubus_rpc_session metadata is type-checked and excluded from business schemas');
+}
+
 rpcSurfaceTests();
 browserBoundaryTests();
 tokenAndRequestTests();
@@ -394,4 +407,5 @@ docsTests();
 luciRpcEnvelopeTests();
 luciNullChildTests();
 jshnNounsetCompatibilityTests();
+rpcdSessionMetadataTests();
 process.stdout.write(`${checks} Phase 7 static/pure checks passed.\n`);

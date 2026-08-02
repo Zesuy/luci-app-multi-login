@@ -268,14 +268,26 @@ ml_service_enabled() { [ -e /etc/rc.d/S99multilogin ] && [ ! -L /etc/rc.d/S99mul
 ml_service_running() { ubus -S call service list '{"name":"multilogin"}' 2>/dev/null | grep -q '"running"[[:space:]]*:[[:space:]]*true'; }
 
 ml_parse_request() {
-	local raw trimmed keys
+	local raw trimmed keys key filtered
 	raw=$(cat) || return 1
 	trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || return 1
 	case $trimmed in \{*\}) ;; *) return 1 ;; esac
 	json_init
 	ml_json_load "$trimmed" || return 1
-	json_get_keys keys ''
-	ML_REQUEST_KEYS=$(printf '%s\n' $keys | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+	json_get_keys keys '' || return 1
+	filtered=''
+	for key in $keys; do
+		case $key in
+		ubus_rpc_session)
+			# rpcd adds this trusted, non-business field before invoking a
+			# shell handler. Validate its type, then exclude it from the
+			# exact product request schema below.
+			ml_request_type "$key" string || return 1
+			;;
+		*) filtered="$filtered${filtered:+ }$key" ;;
+		esac
+	done
+	ML_REQUEST_KEYS=$(printf '%s\n' $filtered | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
 }
 
 ml_request_type() {

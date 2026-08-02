@@ -675,14 +675,25 @@ ml_get_typed() {
 }
 
 ml_parse_request() {
-	local method keys sorted key boolean_value
+	local method keys sorted key boolean_value filtered
 	method=$1
 	ml_trim_json_object "$ML_REQUEST" || return 1
 	ml_json_load "$ML_REQUEST" >/dev/null 2>&1 || return 1
-	json_get_keys keys ''
+	json_get_keys keys '' || return 1
+	filtered=''
+	for key in $keys; do
+		case $key in
+		ubus_rpc_session)
+			# rpcd injects this trusted session marker into shell-handler
+			# params. It is transport metadata, not a product field.
+			ml_get_typed ML_RPC_SESSION ubus_rpc_session string && [ -n "$ML_RPC_SESSION" ] || return 1
+			;;
+		*) filtered="$filtered${filtered:+ }$key" ;;
+		esac
+	done
 	sorted=''
-	if [ -n "$keys" ]; then
-		sorted=$(for key in $keys; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
+	if [ -n "$filtered" ]; then
+		sorted=$(for key in $filtered; do printf '%s\n' "$key"; done | LC_ALL=C sort | tr '\n' ' ')
 		sorted=${sorted% }
 	fi
 	[ "$(ml_policy_request_fields "$method" "$sorted")" = ok ] || return 1
