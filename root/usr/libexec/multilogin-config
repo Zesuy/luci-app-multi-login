@@ -603,7 +603,7 @@ ml_save_account() {
 	if [ -n "$section" ]; then
 		ml_config_token "$section" && [ "$(ml_section_type "$section")" = account ] || {
 			ml_error not_found 'account not found'
-		return
+			return
 		}
 	else
 		section=$(ml_next_section_name account) || {
