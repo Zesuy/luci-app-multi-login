@@ -5,14 +5,21 @@ All notable changes to MultiLogin are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and release entries use the SemVer source version. OpenWrt package archives
 append their independent `PKG_RELEASE` build revision; for this candidate the
-24.10 SDK emits `3.0.0-rc.1-r18` and the APK-based 25.12 SDK emits
-`3.0.0_rc1-r18`. The APK spelling is a
+24.10 SDK emits `3.0.0-rc.1-r19` and the APK-based 25.12 SDK emits
+`3.0.0_rc1-r19`. The APK spelling is a
 deterministic package-manager projection; the source, tag, script, and
 changelog version remains `3.0.0-rc.1`.
 
 ## [3.0.0-rc.1] - 2026-08-03
 
 ### Fixed
+
+- Package revision 19 simplifies the product surface: the dashboard keeps only
+  the overall conclusion and blocker warning cards, treats missing network
+  resources as non-blocking, and keeps service controls inside the blocker card.
+  Managed script updates are now one confirmed check-and-update action; hashes,
+  generations, candidate stages, and previous-version rollback details remain
+  internal, while the package-built-in restore action stays available.
 
 - Package revision 18 reorganizes the LuCI product flow around four task
   destinations: 仪表盘, 登录管理, 网络资源, and 维护. Service operations are

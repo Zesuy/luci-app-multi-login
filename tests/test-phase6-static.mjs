@@ -118,7 +118,8 @@ function conflictAndBusyTests() {
   assert.match(runner, /state\.busy\s*=\s*false/, 'action does not leave busy state');
   assert.match(runner, /preserveConflictDraft[\s\S]*?refresh\(\{\s*preserveTypedDraft:\s*true\s*\}\)/, 'failure refresh does not explicitly preserve typed text and its base');
   assert.match(refresh, /if\s*\(!preserveTypedDraft\s*\|\|\s*updateDraftBase\)[\s\S]*?state\.draftBaseHash\s*=/, 'refresh can silently advance the base while preserving typed text');
-  assert.match(source, /state\.busy\s*\|\|\s*!state\.info\.ok|disabled\s*=\s*state\.busy/, 'busy state does not disable actions');
+  assert.match(source, /function operationDisabled\([\s\S]*pending\(key\)/, 'busy state does not disable actions');
+  assert.match(source, /disabled['"]?:\s*disabledAttr\(/, 'busy state does not use semantic disabled attributes');
   assert.match(source, /callScriptSaveDraft[\s\S]{0,300}updateDraftBase:\s*true/, 'successful save cannot adopt the returned draft base');
   pass('pure conflict preservation, success-only base adoption, and duplicate-action blocking');
 }
@@ -194,15 +195,21 @@ function reloadAndRetryFailureTests() {
 
 function stateAndMetadataTests() {
   assert.match(source, /state\.check\s*=/, 'update-check response is not stored');
-  assert.match(source, /state\.check[\s\S]*\b(?:relation|remote|available|downgrade)\b/, 'update-check result is not rendered');
-  for (const token of ['raw_url', 'source', 'mode', 'version', 'sha256'])
-    assert.match(source, new RegExp(`\\b${token}\\b`), `Managed metadata omits ${token}`);
+  const managedUpdate = functionSource('runManagedUpdate');
+  assert.match(managedUpdate, /confirm\s*\(/, 'managed update has no single confirmation gate');
+  for (const token of ['callScriptCheck', 'callScriptStage', 'callScriptValidate', 'callScriptActivate'])
+    assert.match(managedUpdate, new RegExp(token), `managed update omits ${token}`);
+  assert.ok(managedUpdate.indexOf('callScriptCheck') < managedUpdate.indexOf('callScriptStage'), 'managed update checks after staging');
+  assert.ok(managedUpdate.indexOf('callScriptStage') < managedUpdate.indexOf('callScriptValidate'), 'managed update validates before staging');
+  assert.ok(managedUpdate.indexOf('callScriptValidate') < managedUpdate.indexOf('callScriptActivate'), 'managed update activates before validation');
+  assert.match(managedUpdate, /callScriptActivate\([^\n]+,\s*true\s*,\s*false\)/, 'managed update can implicitly downgrade');
+  assert.doesNotMatch(source, /当前版本和指纹|远程版本和指纹|候选状态|回滚到上一版本|上一版本以便回滚|指纹为/, 'internal update metadata is exposed to users');
+  assert.doesNotMatch(source, /summaryText|metadataRow/, 'fingerprint metadata renderer remains in the UI');
 
   assert.match(source, /recovery_required/, 'recovery-required state is absent');
   assert.match(source, /recovery_required[\s\S]*disabled|disabled[\s\S]*recovery_required/, 'recovery-required does not disable actions');
   assert.match(source, /retryLoad|刷新脚本状态/, 'recovery/error state has no retry action');
   assert.match(source, /state\.busy[\s\S]*aria-busy/, 'loading/busy state is not announced');
-  assert.match(source, /candidate\.present\s*\?/, 'candidate empty state is absent');
   assert.match(source, /draftMissing\s*\?/, 'draft empty state is absent');
   assert.match(source, /actionError[\s\S]*role':\s*'alert'/, 'error/recovery state is not rendered as an alert');
 
@@ -213,13 +220,18 @@ function stateAndMetadataTests() {
 }
 
 function confirmationAndAccessibilityTests() {
-  for (const variable of ['callScriptValidate', 'callScriptActivate', 'callScriptRollback', 'callScriptRestore', 'callScriptDiscardDraft']) {
+  for (const variable of ['callScriptValidate', 'callScriptActivate', 'callScriptRestore', 'callScriptDiscardDraft']) {
     const declaration = rpcDeclarations().find((item) => item.variable === variable);
     const calls = [...source.matchAll(new RegExp(`\\b${variable}\\(`, 'g'))].filter((match) => match.index > declaration.end);
     assert.ok(calls.length > 0, `${variable} is never called`);
-    for (const call of calls)
-      assert.match(source.slice(Math.max(0, call.index - 500), call.index), /confirm\s*\(/, `${variable} call lacks an explicit nearby confirmation`);
+    const customCalls = calls.filter((call) => /'custom'/.test(source.slice(call.index, call.index + 80)));
+    for (const call of customCalls)
+      assert.match(source.slice(Math.max(0, call.index - 500), call.index), /confirm\s*\(/, `${variable} Custom call lacks an explicit nearby confirmation`);
   }
+  const rollbackDeclaration = rpcDeclarations().find((item) => item.variable === 'callScriptRollback');
+  const rollbackCalls = [...source.matchAll(/\bcallScriptRollback\(/g)].filter((match) => match.index > rollbackDeclaration.end);
+  assert.equal(rollbackCalls.length, 0, 'managed UI still exposes the previous-version rollback action');
+  assert.match(source, /runManagedUpdate[\s\S]*confirm\s*\(/, 'managed update confirmation is absent');
   assert.match(source, /callScriptValidate\([^\n]+,\s*true\s*\)/, 'validate confirmation boolean is not literal true');
   assert.match(source, /callScriptActivate\([^\n]+,\s*true\s*,/, 'activate confirmation boolean is not literal true');
   assert.match(source, /root(?:-level|\s*级)/i, 'root-code execution warning is absent');

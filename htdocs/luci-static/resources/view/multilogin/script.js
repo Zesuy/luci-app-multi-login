@@ -95,13 +95,6 @@ function hash(summaryValue) {
     return summaryValue && summaryValue.sha256 ? summaryValue.sha256 : '';
 }
 
-function summaryText(summaryValue) {
-    if (!summaryValue || !summaryValue.present)
-        return _('不可用');
-
-    return '%s — %s'.format(summaryValue.version || _('版本未知'), hash(summaryValue) || _('无指纹'));
-}
-
 function actionError(response) {
     var messages = {
         conflict: _('服务器状态已变化。已保留您输入的草稿，请查看最新服务器草稿后再保存。'),
@@ -332,6 +325,102 @@ return view.extend({
             });
         }
 
+        function runManagedUpdate() {
+            if (state.busy)
+                return;
+
+            if (!confirm(_('确认检查并更新托管脚本吗？这会先检查固定来源，再验证并切换通过检查的 cqu-portal.sh。不会自动降级。')))
+                return;
+
+            var expectedGeneration = generation();
+            var outcome = { kind: 'status', message: _('正在检查并更新托管脚本…') };
+
+            function fail(response, fallback, kind) {
+                var code = response && response.code;
+                var messages = {
+                    download_failed: _('无法连接固定更新源，未更新。'),
+                    source_rejected: _('更新脚本未通过安全检查，未更新。'),
+                    validation_failed: _('更新验证失败，当前脚本未改变。'),
+                    activation_failed: _('更新未激活，当前脚本仍保留。'),
+                    recovery_required: _('脚本需要先恢复，托管更新已停止。'),
+                    conflict: _('脚本状态已变化，托管更新已停止。请刷新后重试。'),
+                    invalid_state: _('当前脚本状态不允许更新，请刷新后重试。')
+                };
+                outcome = { kind: kind || 'error', message: messages[code] || fallback || _('托管更新未完成，当前脚本未改变。') };
+                return null;
+            }
+
+            function validGeneration(value) {
+                var number = Number(value);
+                return Number.isInteger(number) && number >= 0;
+            }
+
+            state.busy = true;
+            state.busyKey = 'managed-update';
+            setFeedback('status', outcome.message);
+            draw();
+
+            L.resolveDefault(callScriptCheck(), responseError()).then(function (checkResponse) {
+                if (!checkResponse || !checkResponse.ok)
+                    return fail(checkResponse);
+
+                state.check = checkResponse.data || {};
+                if (!state.check.available)
+                    return fail(null, _('当前已是最新版本，无需更新。'), 'status');
+
+                if (state.check.downgrade || state.check.relation === 'older')
+                    return fail(null, _('发现较旧版本，未更新；不会自动降级。'));
+
+                if (state.check.relation !== 'newer' && state.check.relation !== 'same_version_changed')
+                    return fail(null, _('无法确认更新版本，未更新。'));
+
+                return L.resolveDefault(callScriptStage(expectedGeneration), responseError()).then(function (stageResponse) {
+                    if (!stageResponse || !stageResponse.ok)
+                        return fail(stageResponse);
+
+                    var stageData = stageResponse.data || {};
+                    var candidate = stageData.candidate || {};
+                    var candidateHash = hash(candidate);
+                    var stageGeneration = Number(stageData.generation);
+                    if (!candidateHash || !validGeneration(stageGeneration))
+                        return fail(null, _('更新状态无效，未更新。'));
+
+                    return L.resolveDefault(callScriptValidate('candidate', candidateHash, stageGeneration, true), responseError()).then(function (validateResponse) {
+                        if (!validateResponse || !validateResponse.ok)
+                            return fail(validateResponse);
+
+                        var validateData = validateResponse.data || {};
+                        var validatedHash = hash(validateData.summary) || candidateHash;
+                        var validateGeneration = Number(validateData.generation);
+                        if (!validatedHash || !validGeneration(validateGeneration))
+                            return fail(null, _('更新验证状态无效，未更新。'));
+
+                        return L.resolveDefault(callScriptActivate('candidate', validatedHash, validateGeneration, true, false), responseError()).then(function (activateResponse) {
+                            if (!activateResponse || !activateResponse.ok)
+                                return fail(activateResponse);
+
+                            var validation = activateResponse.data && activateResponse.data.validation;
+                            outcome = {
+                                kind: 'status',
+                                message: validation && validation.status === 'offline' ?
+                                    _('托管脚本已更新；当前接口离线。') : _('托管脚本已更新。')
+                            };
+                            return activateResponse;
+                        });
+                    });
+                });
+            }).then(function () {
+                return refresh({ preserveTypedDraft: true });
+            }).catch(function () {
+                outcome = { kind: 'error', message: _('托管更新未完成，当前脚本未改变。') };
+            }).then(function () {
+                state.busy = false;
+                state.busyKey = '';
+                setFeedback(outcome.kind, outcome.message);
+                draw();
+            });
+        }
+
         function reloadServerDraft() {
             if (!confirm(_('要用最新服务器草稿替换编辑器内容吗？请先复制未保存的输入。')))
                 return;
@@ -355,13 +444,6 @@ return view.extend({
             });
         }
 
-        function metadataRow(label, value) {
-            return E('div', { 'class': 'script-metadata-row' }, [
-                E('dt', {}, label),
-                E('dd', {}, value)
-            ]);
-        }
-
         function statusBadge(label, kind) {
             return E('span', { 'class': 'ml-status ml-status--' + (kind || 'neutral') }, label);
         }
@@ -377,21 +459,13 @@ return view.extend({
 
         function draw() {
             var info = currentInfo();
-            var active = summary(info, 'active');
-            var candidate = summary(info, 'candidate');
             var factory = summary(info, 'factory');
-            var lkg = summary(info, 'last_known_good');
             var custom = summary(info, 'custom');
-            var remote = state.check && state.check.remote ? state.check.remote : emptySummary();
             var draftState = state.draft && state.draft.ok ? summary(state.draft.data, 'summary') : custom;
             var draftLoadError = state.draft && !state.draft.ok && state.draft.code !== 'not_found';
-            var canStageCandidate = !candidate.present && !!(state.check && state.check.available);
-            var canValidateCandidate = candidate.present && candidate.status === 'staged';
-            var canActivateCandidate = candidate.present && candidate.status === 'validated';
+            var draftMissing = !draftState.present;
             var canValidateCustom = draftState.present && (draftState.status === 'draft' || draftState.status === 'validated');
             var canActivateCustom = draftState.present && draftState.status === 'validated';
-            var draftMissing = !draftState.present;
-            var disabled = state.busy || !state.info.ok || info.recovery_required;
             var managedUnavailable = !state.info.ok || info.recovery_required || state.busyKey === 'refresh';
             var customUnavailable = !state.info.ok || info.recovery_required || draftLoadError || state.busyKey === 'refresh' || state.busyKey === 'draft-reload';
             var textarea = E('textarea', {
@@ -410,10 +484,20 @@ return view.extend({
             });
 
             var draftSaved = !state.conflict && textarea.value === state.savedDraftText;
-            var managedPrimary = candidate.present && candidate.status === 'staged' ? 'validate' :
-                (canActivateCandidate ? 'activate' : (canStageCandidate ? 'stage' : 'check'));
             var customPrimary = draftMissing || !draftSaved ? 'save' :
                 (draftState.status === 'draft' ? 'validate' : (canActivateCustom ? 'activate' : 'save'));
+
+            function draftStatusLabel() {
+                if (draftMissing)
+                    return _('没有已保存草稿');
+                if (!draftSaved)
+                    return _('有未保存修改');
+                if (draftState.status === 'validated')
+                    return _('已验证草稿');
+                if (draftState.status === 'draft')
+                    return _('已保存，待验证');
+                return _('已保存草稿');
+            }
 
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
 
@@ -421,7 +505,7 @@ return view.extend({
                 E('div', { 'class': 'ml-page__header script-page-header' }, [
                     E('div', { 'class': 'ml-page__heading' }, [
                         E('h2', { 'class': 'ml-page__title' }, _('脚本维护')),
-                        E('p', { 'class': 'ml-page__description' }, _('按维护任务选择托管更新或自定义草稿；每一步完成后才显示下一步操作。'))
+                        E('p', { 'class': 'ml-page__description' }, _('选择托管更新或自定义草稿。托管操作只更新 cqu-portal.sh，所有执行步骤都由固定脚本 RPC 控制。'))
                     ]),
                     E('div', { 'class': 'ml-page__header-actions' }, [
                         nativeButton(state.busyKey === 'refresh' ? _('正在刷新…') : _('刷新脚本状态'), retryLoad, pending('refresh'))
@@ -458,117 +542,35 @@ return view.extend({
                     nativeButton(_('刷新脚本状态'), retryLoad, pending('refresh'))
                 ]) : null,
                 state.path === 'managed' ? E('div', { 'id': 'managed-path', 'role': 'tabpanel', 'aria-labelledby': 'managed-path-tab' }, [
-                    E('section', { 'class': 'ml-section ml-card script-panel', 'aria-labelledby': 'managed-heading' }, [
+                    E('section', { 'class': 'ml-section ml-card script-panel script-managed-panel', 'aria-labelledby': 'managed-heading' }, [
                         E('div', { 'class': 'ml-section__header' }, [
                             E('div', {}, [
                                 E('h3', { 'id': 'managed-heading' }, _('托管更新')),
-                                E('p', { 'class': 'ml-help' }, _('只从固定来源检查 cqu-portal.sh；当前活动脚本不会被检查或下载动作直接覆盖。'))
-                            ]),
-                            statusBadge(info.mode === 'managed' ? _('当前为托管') : _('当前为自定义'), info.mode === 'managed' ? 'success' : 'neutral')
-                        ]),
-                        E('ol', { 'class': 'script-steps' }, [
-                            E('li', { 'class': 'script-step script-step--current' }, [
-                                E('h4', {}, _('1. 当前脚本摘要')),
-                                E('dl', { 'class': 'script-metadata' }, compact([
-                                    metadataRow(_('活动脚本来源'), active.source || _('未知')),
-                                    metadataRow(_('当前版本和指纹'), summaryText(active)),
-                                    metadataRow(_('固定更新源'), info.raw_url || _('离线时不可用'))
-                                ]))
-                            ]),
-                            E('li', { 'class': 'script-step' }, compactChildren([
-                                E('h4', {}, _('2. 检查更新')),
-                                state.check ? E('p', { 'class': 'script-step__result' }, [
-                                    statusBadge(state.check.available ? _('发现候选版本') : _('暂无新版本'), state.check.available ? 'warning' : 'success'),
-                                    E('span', {}, ' ' + (state.check.relation || _('版本关系未知')))
-                                ]) : E('p', { 'class': 'ml-help' }, _('先检查固定更新源，页面只会显示版本和指纹摘要。')),
-                                state.check ? E('dl', { 'class': 'script-metadata' }, compact([
-                                    metadataRow(_('远程版本和指纹'), summaryText(remote)),
-                                    metadataRow(_('需要确认降级'), state.check.downgrade ? _('是') : _('否'))
-                                ])) : null,
-                                E('div', { 'class': 'script-actions' }, [
-                                    operationButton(_('检查更新'), function () {
-                                        runAction(_('检查更新'), callScriptCheck, { preserveTypedDraft: true, storeCheck: true, actionKey: 'managed-check' });
-                                    }, 'managed-check', managedUnavailable, managedPrimary === 'check')
-                                ])
-                            ])),
-                            E('li', { 'class': 'script-step' }, compactChildren([
-                                E('h4', {}, _('3. 候选版本')),
-                                candidate.present ? E('dl', { 'class': 'script-metadata' }, [
-                                    metadataRow(_('候选状态'), '%s — %s'.format(candidate.status, summaryText(candidate))),
-                                    metadataRow(_('候选来源'), candidate.source || _('固定更新源'))
-                                ]) : E('p', { 'class': 'ml-help' }, state.check && state.check.available ? _('检查到新版本后，下载候选版本并继续验证。') : _('检查更新后，有候选版本时才可下载。')),
-                                canStageCandidate ? E('div', { 'class': 'script-actions' }, [
-                                    operationButton(_('下载候选版本'), function () {
-                                        runAction(_('下载候选版本'), function () {
-                                            return callScriptStage(generation());
-                                        }, { preserveTypedDraft: true, actionKey: 'managed-stage' });
-                                    }, 'managed-stage', managedUnavailable, managedPrimary === 'stage')
-                                ]) : null
-                            ])),
-                            E('li', { 'class': 'script-step' }, compactChildren([
-                                E('h4', {}, _('4. 验证候选版本')),
-                                candidate.present && candidate.status === 'validated' ? E('p', { 'class': 'script-step__result' }, statusBadge(_('候选版本已验证'), 'success')) :
-                                    (canValidateCandidate ? E('p', { 'class': 'ml-help' }, _('验证会以 root 权限执行候选脚本的 self-test；验证通过前不能切换。')) : E('p', { 'class': 'ml-help' }, _('下载候选版本后，此处才会开放验证。'))),
-                                canValidateCandidate ? E('div', { 'class': 'script-actions' }, [
-                                    operationButton(_('验证候选版本'), function () {
-                                        if (!confirm(_('验证会以 root 权限执行此候选代码。指纹：%s').format(hash(candidate))))
-                                            return;
-                                        runAction(_('验证候选版本'), function () {
-                                            return callScriptValidate('candidate', hash(candidate), generation(), true);
-                                        }, { preserveTypedDraft: true, actionKey: 'managed-validate' });
-                                    }, 'managed-validate', managedUnavailable, managedPrimary === 'validate')
-                                ]) : null
-                            ])),
-                            E('li', { 'class': 'script-step' }, [
-                                E('h4', {}, _('5. 明确确认切换')),
-                                canActivateCandidate ? E('div', {}, [
-                                    E('p', { 'class': 'ml-help' }, _('候选版本已验证。切换会替换活动 cqu-portal.sh，并保留上一版本以便回滚。')),
-                                    E('label', { 'class': 'script-checkbox' }, [
-                                        E('input', { 'type': 'checkbox', 'name': 'allow-downgrade', 'disabled': disabledAttr(operationDisabled('managed-activate', managedUnavailable)) }),
-                                        E('span', {}, _('如适用，我明确同意激活较低版本的托管候选脚本。'))
-                                    ]),
-                                    E('div', { 'class': 'script-actions' }, [
-                                        operationButton(_('切换到候选版本'), function () {
-                                            var downgrade = root.querySelector('input[name="allow-downgrade"]');
-                                            if (!confirm(_('要切换到指纹为 %s 的已验证候选版本吗？这会替换活动脚本。').format(hash(candidate))))
-                                                return;
-                                            runAction(_('切换到候选版本'), function () {
-                                                return callScriptActivate('candidate', hash(candidate), generation(), true, !!(downgrade && downgrade.checked));
-                                            }, { preserveTypedDraft: true, actionKey: 'managed-activate' });
-                                        }, 'managed-activate', managedUnavailable, managedPrimary === 'activate')
-                                    ])
-                                ]) : E('p', { 'class': 'ml-help' }, _('候选版本验证通过后，此处才会开放切换。'))
+                                E('p', { 'class': 'ml-help' }, _('一次点击并确认后，页面会检查固定来源、暂存、验证并切换通过检查的 cqu-portal.sh。发现无更新、较旧版本或任一步失败时，当前脚本保持不变。'))
                             ])
+                        ]),
+                        E('div', { 'class': 'script-actions script-managed-actions' }, [
+                            operationButton(_('检查并更新'), runManagedUpdate, 'managed-update', managedUnavailable, true)
                         ])
                     ]),
-                    E('section', { 'class': 'ml-section ml-card script-recovery-actions', 'aria-labelledby': 'managed-recovery-heading' }, [
+                    E('section', { 'class': 'ml-section ml-card script-recovery-actions', 'aria-labelledby': 'managed-recovery-heading' }, compact([
                         E('div', { 'class': 'ml-section__header' }, [
                             E('div', {}, [
-                                E('h3', { 'id': 'managed-recovery-heading' }, _('回滚 / 恢复')),
-                                E('p', { 'class': 'ml-help' }, _('这些操作独立于更新流程，只在明确确认后替换活动脚本。'))
+                                E('h3', { 'id': 'managed-recovery-heading' }, _('恢复软件包内置脚本')),
+                                E('p', { 'class': 'ml-help' }, _('恢复固定的软件包内置脚本会替换当前活动脚本；此操作需要单独确认。'))
                             ])
                         ]),
-                        E('dl', { 'class': 'script-metadata' }, [
-                            metadataRow(_('上一版本'), lkg.present ? summaryText(lkg) : _('没有可回滚版本')),
-                            metadataRow(_('软件包内置脚本'), factory.present ? summaryText(factory) : _('不可用'))
-                        ]),
                         E('div', { 'class': 'script-actions' }, [
-                            operationButton(_('回滚到上一版本'), function () {
-                                if (!confirm(_('要回滚到指纹为 %s 的上一版本吗？这会替换活动脚本。').format(hash(lkg))))
-                                    return;
-                                runAction(_('回滚到上一版本'), function () {
-                                    return callScriptRollback(hash(lkg), generation(), true);
-                                }, { preserveTypedDraft: true, actionKey: 'managed-rollback' });
-                            }, 'managed-rollback', managedUnavailable || !lkg.present, false, true),
                             operationButton(_('恢复软件包内置脚本'), function () {
-                                if (!confirm(_('要恢复指纹为 %s 的软件包内置脚本吗？这会替换活动脚本。').format(hash(factory))))
+                                if (!confirm(_('确认恢复软件包内置脚本吗？这会替换当前活动脚本。')))
                                     return;
                                 runAction(_('恢复软件包内置脚本'), function () {
                                     return callScriptRestore(hash(factory), generation(), true);
                                 }, { preserveTypedDraft: true, actionKey: 'managed-restore' });
                             }, 'managed-restore', managedUnavailable || !factory.present, false, true)
-                        ])
-                    ])
+                        ]),
+                        !factory.present ? E('p', { 'class': 'ml-help' }, _('软件包内置脚本当前不可用。')) : null
+                    ]))
                 ]) : E('div', { 'id': 'custom-path', 'role': 'tabpanel', 'aria-labelledby': 'custom-path-tab' }, [
                     E('section', { 'class': 'ml-section ml-card script-panel', 'aria-labelledby': 'custom-heading' }, compact([
                         E('div', { 'class': 'ml-section__header' }, [
@@ -576,7 +578,7 @@ return view.extend({
                                 E('h3', { 'id': 'custom-heading' }, _('自定义草稿')),
                                 E('p', { 'class': 'ml-help' }, _('自定义内容始终先保存为服务器端草稿，再验证和明确激活；它不会直接编辑活动脚本。'))
                             ]),
-                            statusBadge(draftMissing ? _('没有草稿') : (draftSaved ? _('已保存') : _('有未保存修改')), draftMissing || !draftSaved ? 'warning' : 'success')
+                            statusBadge(draftStatusLabel(), draftMissing || !draftSaved ? 'warning' : (draftState.status === 'validated' ? 'success' : 'neutral'))
                         ]),
                         E('p', { 'id': 'custom-root-warning', 'class': 'alert-message', 'role': 'alert' }, _('安全警告：这是 root 级代码编辑器。请勿写入账户凭据或其他机密；验证会以 root 权限执行保存的精确草稿。')),
                         E('ol', { 'class': 'script-steps' }, [
@@ -588,10 +590,7 @@ return view.extend({
                             ]),
                             E('li', { 'class': 'script-step' }, compactChildren([
                                 E('h4', {}, _('2. 草稿状态')),
-                                E('dl', { 'class': 'script-metadata' }, [
-                                    metadataRow(_('草稿状态'), draftMissing ? _('没有已保存草稿') : '%s — %s'.format(draftState.status, summaryText(draftState))),
-                                    metadataRow(_('草稿基准指纹'), state.draftBaseHash || _('没有已保存基准'))
-                                ]),
+                                E('p', { 'class': 'ml-help' }, draftStatusLabel()),
                                 state.conflict ? E('p', { 'class': 'alert-message', 'role': 'alert' }, _('服务器上的草稿已变化。已保留您的输入；解决冲突前不能保存、验证、激活或丢弃。')) : null,
                                 !draftMissing && draftSaved ? null : E('p', { 'class': 'ml-help' }, draftMissing ? _('当前没有保存草稿；先保存草稿，后续危险操作才会显示。') : _('检测到未保存修改；先保存草稿，后续危险操作才会显示。'))
                             ])),
@@ -609,13 +608,13 @@ return view.extend({
                             ]),
                             E('li', { 'class': 'script-step' }, compactChildren([
                                 E('h4', {}, _('4. 验证草稿')),
-                                !draftMissing && draftSaved && draftState.status === 'validated' ? E('p', { 'class': 'script-step__result' }, statusBadge(_('草稿已验证'), 'success')) :
+                                draftState.status === 'validated' && draftSaved ? E('p', { 'class': 'script-step__result' }, statusBadge(_('草稿已验证'), 'success')) :
                                     (canValidateCustom && draftSaved ? E('p', { 'class': 'ml-help' }, _('验证会以 root 权限执行已保存草稿；验证通过前不能激活。')) : E('p', { 'class': 'ml-help' }, _('保存草稿后，此处才会开放验证。'))),
                                 canValidateCustom && draftSaved && draftState.status === 'draft' ? E('div', { 'class': 'script-actions' }, [
                                     operationButton(_('验证草稿'), function () {
                                         if (!requireCustomDraftSaved())
                                             return;
-                                        if (!confirm(_('验证会以 root 权限执行此已保存草稿。指纹：%s').format(hash(draftState))))
+                                        if (!confirm(_('确认验证已保存的自定义草稿吗？验证会以 root 权限执行。')))
                                             return;
                                         runAction(_('验证草稿'), function () {
                                             return callScriptValidate('custom', hash(draftState), generation(), true);
@@ -626,12 +625,12 @@ return view.extend({
                             E('li', { 'class': 'script-step' }, [
                                 E('h4', {}, _('5. 明确确认激活')),
                                 canActivateCustom && draftSaved ? E('div', {}, [
-                                    E('p', { 'class': 'ml-help' }, _('草稿已验证。激活会替换活动脚本，并保留上一版本以便回滚。')),
+                                    E('p', { 'class': 'ml-help' }, _('草稿已验证。激活会替换当前活动脚本；如需恢复，请使用软件包内置脚本。')),
                                     E('div', { 'class': 'script-actions' }, [
                                         operationButton(_('确认激活草稿'), function () {
                                             if (!requireCustomDraftSaved())
                                                 return;
-                                            if (!confirm(_('要激活指纹为 %s 的已验证自定义草稿吗？这会替换活动脚本。').format(hash(draftState))))
+                                            if (!confirm(_('确认激活已验证的自定义草稿吗？这会替换当前活动脚本。')))
                                                 return;
                                             runAction(_('确认激活草稿'), function () {
                                                 return callScriptActivate('custom', hash(draftState), generation(), true, false);

@@ -529,6 +529,16 @@
 	line-height: 1.55;
 }
 
+.ml-dashboard-service-inline {
+	margin-top: var(--ml-space-5);
+	padding-top: var(--ml-space-4);
+	border-top: 1px solid var(--ml-border);
+}
+
+.ml-dashboard-service-inline h4 {
+	margin: 0 0 var(--ml-space-2);
+}
+
 .ml-dashboard-primary {
 	background: color-mix(in srgb, var(--ml-primary) 7%, var(--ml-surface));
 }

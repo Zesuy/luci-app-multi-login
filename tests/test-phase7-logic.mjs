@@ -354,12 +354,15 @@ function aclAndMenuTests() {
   assert.match(overview, /callServiceAction\(entry\.action\)/);
   for (const action of ['start', 'stop', 'restart', 'enable', 'disable'])
     assert.match(overview, new RegExp(`action:\\s*['"]${action}['"]`), `overview misses ${action} service action`);
-  for (const heading of ['overview-conclusion-heading', 'overview-blockers-heading', 'overview-completeness-heading', 'overview-primary-heading', 'overview-service-heading', 'overview-recovery-heading'])
+  for (const heading of ['overview-conclusion-heading', 'overview-blockers-heading'])
     assert.match(overview, new RegExp(heading), `overview misses ${heading} IA section`);
+  for (const removed of ['overview-completeness-heading', 'overview-primary-heading', 'overview-service-heading', 'overview-recovery-heading'])
+    assert.doesNotMatch(overview, new RegExp(removed), `overview still exposes removed ${removed} section`);
   const loadSource = overview.slice(overview.indexOf('load:'), overview.indexOf('render:'));
   assert.doesNotMatch(loadSource, /callServiceAction\(/, 'overview load path writes service state');
   assert.doesNotMatch(configuration, /method:\s*['"]service_action['"]/, 'configuration retains service action RPC after IA move');
-  assert.match(overview, /visibleServiceActions\s*=\s*serviceActions\.filter/, 'overview does not centralize the primary start affordance');
+  assert.match(overview, /ml-dashboard-service-inline/, 'overview hides service controls instead of keeping them in the blockers card');
+  assert.doesNotMatch(overview, /owned_network_count|缺少网络资源|尚未配置网络资源/, 'network resource absence still blocks the dashboard');
   for (const source of [diagnostics, script]) {
     assert.match(source, /function maintenanceNav\(active\)/, 'maintenance page lacks its task sub-navigation');
     assert.match(source, /maintenance\/troubleshooting/);
@@ -405,7 +408,7 @@ function luciNullChildTests() {
     diagnostics: 2,
     network: 3,
     overview: 2,
-    script: 4
+    script: 3
   };
   for (const [name, expected] of Object.entries(expectedCompactCalls)) {
     const source = read(path.join(viewDirectory, `${name}.js`));
@@ -415,7 +418,8 @@ function luciNullChildTests() {
     assert.match(source, /(?:root|content)\.replaceChildren\.apply\([^;]*compact\(\[/, `${name} does not filter replaceChildren arguments`);
   }
   assert.match(read(path.join(viewDirectory, 'configuration.js')), /function input\([\s\S]*?compact\(\[/, 'configuration input help child is not filtered');
-  assert.match(read(path.join(viewDirectory, 'overview.js')), /!error \? E\([\s\S]*?compact\(\[/, 'overview status children are not filtered');
+  assert.match(read(path.join(viewDirectory, 'overview.js')), /var blockerChildren = compact\(\[/, 'overview blocker children are not filtered');
+  assert.match(read(path.join(viewDirectory, 'overview.js')), /var conclusionChildren = \[/, 'overview conclusion children are not assembled explicitly');
   assert.match(read(path.join(viewDirectory, 'network.js')), /state\.feedback \? E\([\s\S]*?compact\(\[/, 'network feedback children are not filtered');
   assert.match(read(path.join(viewDirectory, 'script.js')), /custom-heading[\s\S]*?compact\(\[/, 'script conflict child is not filtered');
   pass('LuCI optional DOM children never render literal null text on legacy appenders');
