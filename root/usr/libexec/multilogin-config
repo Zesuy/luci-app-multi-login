@@ -419,7 +419,7 @@ ml_section_is_anonymous() {
 	standard=''
 	ordinal=''
 	case $standard_name in
-	"@$type["*"]") status=0 ;;
+	"@${type}["*"]") status=0 ;;
 	"$section") status=1 ;;
 	*) status=2 ;;
 	esac
