@@ -8,7 +8,7 @@ This handout is the compact restart context for future Codex tasks in this works
 
 - Repository: `luci-app-multi-login`
 - Current branch: `codex/fix-release-checksum`
-- Latest committed baseline: `b4e5ed6 Complete r18 LuCI information architecture and safety`; the current r19 product-convergence follow-up is the working-tree release candidate.
+- Latest committed baseline: `a35fca7 Converge r19 dashboard and managed script UI`; the r19 product-convergence candidate is locally committed and independently reviewed.
 - Target product: MultiLogin v3, `v3.0.0-rc.1`
 - Current package revision: `r19`
 - Execution plan: `dev/plan/multilogin-v3.md`
