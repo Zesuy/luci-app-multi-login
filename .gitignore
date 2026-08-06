@@ -9,3 +9,6 @@
 /node_modules/
 /package.json
 /package-lock.json
+
+# Repository-local Codex configuration belongs to each developer/session.
+/.codex/
