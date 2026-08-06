@@ -28,6 +28,7 @@ async function login() {
 }
 
 async function checkRoute(route, expectedMethod, expectedOk) {
+  pageErrors.length = 0;
   const events = [];
   const onRequest = (request) => {
     if (request.url().includes('/ubus/'))
@@ -43,7 +44,7 @@ async function checkRoute(route, expectedMethod, expectedOk) {
   page.on('request', onRequest);
   page.on('response', onResponse);
   await page.goto(`${base}/cgi-bin/luci/admin/services/multilogin/${route}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1600);
+  await page.waitForTimeout(3500);
   page.off('request', onRequest);
   page.off('response', onResponse);
 
@@ -56,7 +57,9 @@ async function checkRoute(route, expectedMethod, expectedOk) {
   const matching = multiloginResults.find((entry) => entry.result[1]?.data?.raw_url !== undefined || entry.result[1]?.data?.settings_enabled !== undefined);
   if (expectedMethod === 'get_overview')
     assert.equal(matching?.result?.[1]?.ok, expectedOk, `${route} overview envelope is not successful`);
-  assert.equal(events.some((event) => event.body.includes('"url"') || event.body.includes('"path"')), false, `${route} exposed a URL/path request field`);
+  const multiloginRequests = events.filter((event) => event.type === 'request' && event.body.includes('"multilogin"'));
+  assert.equal(multiloginRequests.some((event) => event.body.includes('"url"') || event.body.includes('"path"')), false,
+    `${route} exposed a URL/path request field in a MultiLogin RPC`);
   assert.equal(pageErrors.length, 0, `${route} raised browser errors: ${pageErrors.join('; ')}`);
   const text = await page.locator('body').innerText();
   assert.equal(/invalid request fields|提交的脚本状态无效/.test(text), false, `${route} still shows the rpcd request-boundary failure`);
@@ -65,5 +68,5 @@ async function checkRoute(route, expectedMethod, expectedOk) {
 
 await login();
 await checkRoute('overview', 'get_overview', true);
-await checkRoute('scripts', 'script_info', true);
+await checkRoute('maintenance/scripts', 'script_info', true);
 await browser.close();

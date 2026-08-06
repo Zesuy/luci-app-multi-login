@@ -12,6 +12,7 @@
 - Keep `login_control.bash` package-managed. GitHub Raw updates may replace only `cqu-portal.sh`.
 - Never run a real portal login or logout without explicit user authorization. Read-only status checks are allowed.
 - For the current unattended run, keep all portal/device checks offline until Phase 9, as required by the execution plan.
+- For disposable OpenWrt QEMU package/LuCI smoke and screenshots, follow `docs/v3/qemu-luci-smoke-workflow.md`; never treat QEMU evidence as Phase 9 real-device acceptance.
 - Never expose passwords in argv, logs, RPC responses, fixtures, diagnostics, or browser-visible UCI data.
 - Limit unattended gates to compile/lint/static checks, read-only artifact inspection, and host-independent product logic. Do not build or extend OpenWrt/opkg/procd/UCI/service/network/rootfs/reboot simulations; defer those integration claims to Phase 9.
 - Use CodeGraph first for structural code questions; use literal search only for text or non-indexed shell/config files.

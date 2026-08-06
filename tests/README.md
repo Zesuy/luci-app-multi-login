@@ -47,6 +47,10 @@ and payload manifests, file modes, release-line filenames, checksums, and APK
 lifecycle-script embedding, including negative extra-file/dependency cases.
 They are never installed or executed, and no QEMU/router behavior is emulated.
 
+The optional real-package QEMU/LuCI smoke and screenshot workflow is documented
+in `docs/v3/qemu-luci-smoke-workflow.md`. It is deliberately outside
+`tests/run.sh` and never counts as real-device or Portal acceptance.
+
 The package-scope SDK job also runs `tests/test-jshn-contract.mjs` against the
 checked-out SDK's real `jshn.sh`/`jshn` and host BusyBox `ash`. This is a narrow
 library contract check (normal, missing, malformed, nested, repeated-init, and
