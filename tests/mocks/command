@@ -90,7 +90,13 @@ if [ -n "$SELECTED_DIR" ]; then
 	if [ -f "$SELECTED_DIR/block" ]; then
 		while [ -f "$SELECTED_DIR/block" ]; do /bin/sleep 0.02; done
 	fi
-	[ ! -f "$SELECTED_DIR/stdout" ] || cat "$SELECTED_DIR/stdout"
+	if [ "$COMMAND" = mwan3 ] && [ -f "$CALL_DIR/curl-config.json" ] && [ -f "$SELECTED_DIR/stdout" ]; then
+		OUTPUT_PATH=$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(x.output || "")' "$CALL_DIR/curl-config.json")
+		[ -n "$OUTPUT_PATH" ] || exit 93
+		cat "$SELECTED_DIR/stdout" >"$OUTPUT_PATH"
+	else
+		[ ! -f "$SELECTED_DIR/stdout" ] || cat "$SELECTED_DIR/stdout"
+	fi
 	[ ! -f "$SELECTED_DIR/stderr" ] || cat "$SELECTED_DIR/stderr" >&2
 	if [ -f "$SELECTED_DIR/status" ]; then
 		read -r STATUS <"$SELECTED_DIR/status"

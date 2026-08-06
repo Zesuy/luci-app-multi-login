@@ -5,14 +5,49 @@ All notable changes to MultiLogin are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and release entries use the SemVer source version. OpenWrt package archives
 append their independent `PKG_RELEASE` build revision; for this candidate the
-24.10 SDK emits `3.0.0-rc.1-r19` and the APK-based 25.12 SDK emits
-`3.0.0_rc1-r19`. The APK spelling is a
+24.10 SDK emits `3.0.0-rc.1-r23` and the APK-based 25.12 SDK emits
+`3.0.0_rc1-r23`. The APK spelling is a
 deterministic package-manager projection; the source, tag, script, and
 changelog version remains `3.0.0-rc.1`.
 
-## [3.0.0-rc.1] - 2026-08-03
+## [3.0.0-rc.1] - 2026-08-04
 
 ### Fixed
+
+- Package revision 23 fixes the automation-settings save path: the frontend
+  `run()` helper now starts the RPC request before the busy-state redraw, so
+  the checkbox and advanced policy fields are read from the values the user
+  actually changed instead of a freshly redrawn form. Saving `启用自动登录`
+  now keeps the checkbox checked and persists `multilogin.global.enabled=1`.
+
+- Package revision 22 keeps the five login-task actions in one row-level
+  action container on desktop. The edit/status group and the
+  login/logout/delete group remain visually separated, but the task table no
+  longer forces them onto two stacked rows on wide screens. Narrow layouts keep
+  the existing responsive wrap behavior.
+
+- The disposable QEMU smoke harness now scopes its URL/path-field assertion to
+  MultiLogin RPCs, ignores LuCI's pre-login session errors, navigates the fixed
+  `maintenance/scripts` route, and waits for fresh TCG first-load rendering.
+  These are test-harness fixes exposed by the real OpenWrt 24.10.8 QEMU smoke;
+  they do not change product RPC, UCI, ACL, service, or portal behavior.
+
+- Package revision 21 removes unnecessary local-input dependencies from the
+  portal action path. Passwords remain stdin-only but are read as one trusted
+  local line with BusyBox `ash` builtins instead of a temporary-file
+  `dd`/`od`/`wc` pipeline. IPv4/IPv6 Base64 now uses the script's already
+  required `awk`, so status, self-test, and login do not assume standalone
+  `base64`, OpenSSL, or optional BusyBox applets.
+
+- Package revision 20 fixes LuCI instance actions that were rejected before
+  execution because the rpcd action handler did not filter the injected
+  `ubus_rpc_session`. Status, login, and logout now reach the fixed portal
+  script, return their structured status/outcome/exit result in the task row,
+  and write a root-only allowlisted manual-action diagnostic. The login-task
+  editor uses matching IPv4/IPv6 interface selectors. Custom script management
+  is reduced to editing, saving, saving-and-enabling, and discarding, with an
+  explicit server-side action to copy a hash-matched Managed active script into
+  the isolated draft as an editing starting point.
 
 - Package revision 19 simplifies the product surface: the dashboard keeps only
   the overall conclusion and blocker warning cards, treats missing network
@@ -88,6 +123,15 @@ changelog version remains `3.0.0-rc.1`.
   local/package-scope gate executes the real SDK JSHN library with BusyBox ash
   for normal, missing-field, malformed-input, nested-state, repeated-init, and
   envelope paths.
+
+### Known limitations
+
+- The captured PC (`operator=0`, terminal types `1/1`) and Mobile
+  (`operator=1`, terminal types `2/2`) request mappings each reproduce the
+  expected `phone_flag`, but simultaneous PC/Mobile session coexistence is not
+  established. Current device observations still show one mode displacing the
+  other. This remains an incomplete Phase 9 Portal gate and is not claimed as
+  fixed by revision 23.
 
 ### Added
 

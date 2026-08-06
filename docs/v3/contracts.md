@@ -244,7 +244,7 @@ Exact method names are reserved now; detailed data schemas are frozen in the own
 
 - Configuration (Phase 7): `get_overview`, `get_settings`, `save_settings`, `list_accounts`, `list_instances`, `service_status`, `service_action`, `get_diagnostics`, `get_logs`, `clear_logs`.
 - Script backend (Phase 5): `script_info`, `script_check`, `script_stage`, `script_validate`, `script_activate`, `script_rollback`, `script_restore`.
-- Custom draft (Phase 5 backend support for the Phase 6 UI): `script_get_draft`, `script_save_draft`, `script_discard_draft`.
+- Custom script editing (Phase 5 backend support for the Phase 6 UI): `script_get_draft`, `script_create_draft`, `script_save_draft`, `script_discard_draft`.
 - Owned network recovery (Phase 7): `network_recover` in addition to preserved quick-setup methods.
 
 Script methods accept no URL or arbitrary path. `script_activate` identifies only the server-side `candidate` or validated `custom` source and requires its expected SHA-256/base generation. `service_action` allowlists `start`, `stop`, `restart`, `enable`, and `disable` for `multilogin` only.
@@ -263,6 +263,7 @@ All Phase 5 parameters are members of one JSON object and unknown fields are rej
 | `script_rollback` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode`, `active`, and `validation`. `expected_sha256` names the current LKG shown by `script_info`. |
 | `script_restore` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode` (`managed`), `active`, and `validation`. `expected_sha256` names the immutable factory shown by `script_info`. |
 | `script_get_draft` | none | Keys `generation`, `source="draft"`, `summary`, and `content`. A missing draft returns `not_found`. This is the only source-reading RPC; active and migration-preserved executable content is never returned to the browser. |
+| `script_create_draft` | `expected_sha256`, `expected_generation` | Copies the exact validated Managed active script into the isolated mode-0600 Custom draft and returns `generation` plus the `custom` summary. It rejects Custom/unknown active modes, an existing draft, and hash/generation conflicts. It never returns active content directly; the browser reads only the successfully isolated draft through `script_get_draft`. |
 | `script_save_draft` | `content`, `base_sha256`, `expected_generation` | Keys `generation` and `custom` (status `draft`, or unchanged `validated` for byte-identical `no_change`). Changed content invalidates earlier validation. Empty `base_sha256` is accepted only when no draft exists. |
 | `script_discard_draft` | `expected_sha256`, `expected_generation` | Keys `generation` and `custom`, which is the exact absent summary. It never removes `custom.preserved.sh`. |
 
@@ -325,7 +326,7 @@ Managed downgrade means only `script_activate` of a Raw candidate whose valid Se
 
 Custom content is non-empty valid UTF-8 text, contains no U+0000, and is at most 256 KiB encoded as UTF-8. Before `script_validate(source=custom)` may execute self-test, it repeats the same hash, regular non-symlink file, size/text, anchored API `3`, SemVer metadata, and `sh -n` checks used for a Raw candidate; any failure is `source_rejected` and no code executes. `custom.preserved.sh` is never modified, deleted, or returned by draft operations; migration recovery/import requires explicit out-of-band root access and a deliberate paste/save into the Custom draft.
 
-The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact caller-created draft because byte-preserving editing cannot be combined with content redaction. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned by an RPC.
+The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact isolated draft because byte-preserving editing cannot be combined with content redaction. A draft is either caller-created or explicitly copied server-side from a hash-matched Managed active script by `script_create_draft`; Custom/unknown active sources cannot be copied into browser-readable state. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned directly by an RPC.
 
 #### 7.3.2 Phase 7 configuration, diagnostics, and ownership RPC schemas
 

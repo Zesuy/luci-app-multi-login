@@ -707,6 +707,10 @@ ml_parse_request() {
 	ML_REQ_CONTENT=''
 	case $method in
 	script_info | script_check | script_get_draft) ;;
+	script_create_draft)
+		ml_get_typed ML_REQ_EXPECTED_SHA256 expected_sha256 string || return 1
+		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
+		;;
 	script_stage)
 		ml_get_typed ML_REQ_EXPECTED_GENERATION expected_generation int || return 1
 		;;
@@ -746,7 +750,7 @@ ml_parse_request() {
 	case $ML_REQ_EXPECTED_GENERATION in '') ;; *) [ "$(ml_policy_generation "$ML_REQ_EXPECTED_GENERATION" "$ML_REQ_EXPECTED_GENERATION")" = ok ] || return 1 ;; esac
 	case $ML_REQ_EXPECTED_SHA256 in '') ;; *) _ml_policy_hash "$ML_REQ_EXPECTED_SHA256" || return 1 ;; esac
 	case $method in script_save_draft) [ -z "$ML_REQ_BASE_SHA256" ] || _ml_policy_hash "$ML_REQ_BASE_SHA256" || return 1 ;; esac
-	case $method:$ML_REQ_SOURCE in script_validate:candidate | script_validate:custom | script_activate:candidate | script_activate:custom | script_info: | script_check: | script_stage: | script_get_draft: | script_rollback: | script_restore: | script_save_draft: | script_discard_draft:) ;; *) return 1 ;; esac
+	case $method:$ML_REQ_SOURCE in script_validate:candidate | script_validate:custom | script_activate:candidate | script_activate:custom | script_info: | script_check: | script_stage: | script_get_draft: | script_create_draft: | script_rollback: | script_restore: | script_save_draft: | script_discard_draft:) ;; *) return 1 ;; esac
 	return 0
 }
 
@@ -1328,6 +1332,37 @@ ml_rpc_get_draft() {
 	ml_emit_end
 }
 
+ml_rpc_create_draft() {
+	local current_hash active_hash active_mode active_size new_summary new_hash new_generation
+	current_hash=$(ml_summary_value "$ML_CUSTOM_SUMMARY" sha256) || current_hash=''
+	ml_check_generation "$current_hash"
+	[ -z "$current_hash" ] || ml_fail_empty invalid_state 'draft already exists'
+	active_hash=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || active_hash=''
+	active_mode=$(ml_summary_value "$ML_ACTIVE_SUMMARY" mode) || active_mode=none
+	[ "$active_mode" = managed ] || ml_fail_empty invalid_state 'only a managed active script can seed a draft'
+	[ -n "$active_hash" ] && [ "$active_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$active_hash"
+	ml_secure_file "$ML_ACTIVE" 755 || ml_fail_empty invalid_state 'active script is unavailable'
+	ml_static_accept "$ML_ACTIVE" 755 || ml_fail_empty source_rejected 'active script failed static validation'
+	active_size=$(wc -c <"$ML_ACTIVE" 2>/dev/null) || ml_fail_empty internal_error 'active size unavailable'
+	ml_has_space "$((active_size * 2))" || ml_fail_empty internal_error 'insufficient script-state space'
+	ml_atomic_copy "$ML_ACTIVE" "$ML_CUSTOM" 0600 || ml_fail_empty internal_error 'draft write failed'
+	new_summary=$(ml_summary_file "$ML_CUSTOM" draft custom custom)
+	new_hash=$(ml_summary_value "$new_summary" sha256) || new_hash=''
+	if [ -z "$new_hash" ] || [ "$new_hash" != "$active_hash" ]; then
+		rm -f "$ML_CUSTOM" || ml_fail_empty internal_error 'draft copy verification and cleanup failed'
+		ml_fail_empty internal_error 'draft copy verification failed'
+	fi
+	new_generation=$((ML_GENERATION + 1))
+	if ! ml_state_write "$new_generation" "$ML_MODE" "$ML_ACTIVE_SUMMARY" "$ML_CANDIDATE_SUMMARY" "$ML_LKG_SUMMARY" "$new_summary"; then
+		rm -f "$ML_CUSTOM" || ml_fail_empty internal_error 'state write and draft cleanup failed'
+		ml_fail_empty internal_error 'state write failed'
+	fi
+	ml_emit_begin 1 ok ''
+	json_add_int generation "$new_generation"
+	ml_json_add_summary custom "$new_summary"
+	ml_emit_end
+}
+
 ml_rpc_save_draft() {
 	local current_hash content_file content_hash content_size new_summary new_generation old_backup
 	current_hash=$(ml_summary_value "$ML_CUSTOM_SUMMARY" sha256) || current_hash=''
@@ -1422,6 +1457,7 @@ ml_rpc() {
 	script_rollback) ml_rpc_rollback_restore rollback ;;
 	script_restore) ml_rpc_rollback_restore restore ;;
 	script_get_draft) ml_rpc_get_draft ;;
+	script_create_draft) ml_rpc_create_draft ;;
 	script_save_draft) ml_rpc_save_draft ;;
 	script_discard_draft) ml_rpc_discard_draft ;;
 	*) ml_fail_empty invalid_request 'unknown method' ;;
@@ -1437,7 +1473,7 @@ recover)
 	;;
 rpc)
 	[ "$#" -eq 2 ] || exit 1
-	case $2 in script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_save_draft | script_discard_draft) ;; *) exit 1 ;; esac
+	case $2 in script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_create_draft | script_save_draft | script_discard_draft) ;; *) exit 1 ;; esac
 	ml_acquire_lock || {
 		ML_GENERATION=0
 		ml_fail_empty internal_error 'script lock unavailable'

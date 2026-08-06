@@ -54,11 +54,14 @@ for (const [index, line] of fs.readFileSync(configPath, 'utf8').split(/\r?\n/).e
 
 const params = {};
 let url = '';
+let output = '';
 let userAgent = '';
 let accountOperator = null;
 for (const option of options) {
   if (option.name === 'url')
     url = option.value;
+  if (option.name === 'output')
+    output = option.value;
   if (option.name === 'user-agent')
     userAgent = option.value;
   if (option.name !== 'data-urlencode')
@@ -90,6 +93,7 @@ const report = {
   config_name: path.basename(configPath),
   option_names: options.map((option) => option.name),
   url,
+  output,
   user_agent: userAgent,
   term_ua: params.term_ua?.[0] ?? null,
   account_operator: accountOperator,

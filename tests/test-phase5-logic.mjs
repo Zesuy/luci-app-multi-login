@@ -28,6 +28,7 @@ const phase5Schemas = Object.freeze({
   script_rollback: ['confirm_activate', 'expected_generation', 'expected_sha256'],
   script_restore: ['confirm_activate', 'expected_generation', 'expected_sha256'],
   script_get_draft: [],
+  script_create_draft: ['expected_generation', 'expected_sha256'],
   script_save_draft: ['base_sha256', 'content', 'expected_generation'],
   script_discard_draft: ['expected_generation', 'expected_sha256'],
 });
@@ -259,6 +260,7 @@ function validationAndTransitionTests() {
     ['rollback', 'available', hashA, hashA, 'no_change'], ['rollback', 'available', hashA, hashB, 'ok'], ['rollback', 'active', hashA, hashA, 'invalid_state'],
     ['restore', 'available', hashA, hashA, 'no_change'], ['restore', 'available', hashA, hashB, 'ok'], ['restore', 'active', hashA, hashA, 'invalid_state'],
     ['save_draft', 'none', '', hashA, 'ok'], ['save_draft', 'draft', hashA, hashA, 'no_change'], ['save_draft', 'validated', hashA, hashA, 'no_change'], ['save_draft', 'draft', hashA, hashB, 'ok'],
+    ['create_draft', 'none', '', hashA, 'ok'], ['create_draft', 'draft', hashA, hashA, 'invalid_state'], ['create_draft', 'validated', hashA, hashA, 'invalid_state'],
     ['discard_draft', 'draft', hashA, hashA, 'ok'], ['discard_draft', 'validated', hashA, hashA, 'ok'], ['discard_draft', 'none', '', '', 'not_found'],
   ];
   for (const [operation, status, currentHash, targetHash, expected] of transitions)
@@ -306,6 +308,13 @@ function contentAndHttpTests() {
 function staticSchemaAndSourceTests() {
   const backend = read(backendPath); const policy = read(policyPath);
   const discovered = discoverBackend(backend);
+  const createDraft = discovered.functions.find((item) => item.name === 'ml_rpc_create_draft');
+  assert.ok(createDraft, 'server-side active-to-draft creator is absent');
+  assert.match(createDraft.body, /active_mode[\s\S]*\[ "\$active_mode" = managed \]/, 'active-to-draft copy accepts Custom/unknown active source');
+  assert.match(createDraft.body, /ML_REQ_EXPECTED_SHA256[\s\S]*ml_secure_file "\$ML_ACTIVE" 755[\s\S]*ml_static_accept "\$ML_ACTIVE" 755/, 'active-to-draft copy lacks hash and source validation');
+  assert.match(createDraft.body, /ml_atomic_copy "\$ML_ACTIVE" "\$ML_CUSTOM" 0600[\s\S]*new_hash=.*ml_summary_value[\s\S]*"\$new_hash" != "\$active_hash"[\s\S]*ml_state_write[\s\S]*rm -f "\$ML_CUSTOM"/, 'active-to-draft copy is not hash-verified, atomic, or rollback-safe');
+  assert.match(createDraft.body, /rm -f "\$ML_CUSTOM" \|\| ml_fail_empty/, 'active-to-draft rollback ignores cleanup failure');
+  assert.doesNotMatch(createDraft.body, /json_add_string\s+content/, 'active source is returned directly instead of through the isolated draft read');
   const policyFunctions = shellFunctions(policy);
   assert.ok(discovered.functions.length > 0, 'backend functions are not statically discoverable');
   for (const item of discovered.functions)

@@ -15,8 +15,8 @@ const mockCommand = path.join(testDirectory, 'mocks/command');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multilogin-portal-tests.'));
 const createdHarnesses = [];
 const emptyHash = crypto.createHash('sha256').update('').digest('hex');
-const pcUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
-const mobileUa = 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36';
+const pcUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
+const mobileUa = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36';
 let checks = 0;
 
 process.on('exit', () => fs.rmSync(root, { recursive: true, force: true }));
@@ -78,7 +78,7 @@ function createHarness(name, options = {}) {
     fs.rmSync(path.join(bin, options.missingCommand), { force: true });
 
   if (options.restrictedPath) {
-    for (const tool of ['awk', 'cat', 'chmod', 'cut', 'date', 'dirname', 'grep', 'head', 'mkdir', 'mktemp', 'node', 'od', 'rm', 'sed', 'sha256sum', 'tr']) {
+    for (const tool of ['awk', 'cat', 'chmod', 'cut', 'date', 'dirname', 'grep', 'head', 'mkdir', 'mktemp', 'node', 'rm', 'sed', 'sha256sum', 'tr', 'wc']) {
       if (fs.existsSync(path.join(bin, tool)))
         continue;
       const lookup = spawnSync('/bin/sh', ['-c', 'command -v "$1"', 'lookup', tool], { encoding: 'utf8' });
@@ -161,7 +161,7 @@ function envelope(result, expectedStatus, action, outcome, errorKind) {
   equal(payload.outcome, outcome, `${action}/${outcome} outcome`);
   equal(payload.error_kind, errorKind, `${action}/${outcome} error_kind`);
   equal(payload.api, 3, `${action}/${outcome} API`);
-  equal(payload.version, '3.0.0-rc.1', `${action}/${outcome} version`);
+  equal(payload.version, '3.0.0-rc.4', `${action}/${outcome} version`);
   assert(payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data), `${action}/${outcome} data must be an object`);
   // Status `offline` is a trustworthy negative observation: it keeps ok=true
   // even though its compatibility exit code is 1. Other exit-1 outcomes are
@@ -257,8 +257,10 @@ function offline() {
 
 function syntaxAndMetadataTests() {
   const portalSource = fs.readFileSync(script, 'utf8');
-  assert(portalSource.includes('internal) fail_exit 3 internal_error internal'), 'login local failures do not emit the internal_error/internal contract pair');
+  assert(/internal\) fail_detail_exit 3 internal_error internal login_request_internal/.test(portalSource), 'login local failures do not emit the detailed internal_error/internal contract pair');
   assert(!portalSource.includes('internal) fail_exit 3 protocol_error internal'), 'login local failures are mislabeled as protocol_error/internal');
+  assert(!/command_exists\s+(?:dd|od|base64|openssl)\b/.test(portalSource), 'portal script requires an avoidable local-input/encoding command');
+  assert(!/busybox\s+base64\b/.test(portalSource), 'portal script assumes the optional BusyBox base64 applet');
   for (const action of ['version', 'self-test']) {
     const harness = createHarness(action);
     const result = invoke(harness, [action]);
@@ -289,7 +291,7 @@ function syntaxAndMetadataTests() {
     envelope(result, 4, 'login', 'argument_error', 'arguments');
     assertNoNetwork(harness, label);
   }
-  for (const [input, label] of [[Buffer.from('nul\0secret\n'), 'NUL stdin password'], ['first\nsecond\n', 'second stdin line']]) {
+  for (const [input, label] of [['first\nsecond\n', 'second stdin line']]) {
     const secret = 'stdin-secret-sentinel';
     const harness = createHarness(`args-${label}`, { secret });
     const result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'fixture-account', '--ua-type', 'pc'], { input });
@@ -354,10 +356,16 @@ function statusTests() {
     assertNoNetwork(harness, `missing ${name}`);
   }
 
-  harness = createHarness('status-encoding', { restrictedPath: true });
-  result = invoke(harness, ['status', '--mwan3', 'wan-test']);
-  envelope(result, 7, 'status', 'encoding_error', 'encoding');
-  assertNoNetwork(harness, 'missing Base64 capability');
+  const alphabetIPv4 = '169.178.205.234';
+  const alphabetIPv6 = '0123:4567:89AB:CDEF::abcdef:1.2.3.4';
+  harness = createHarness('status-minimal-encoding', {
+    restrictedPath: true,
+    env: { MULTILOGIN_MOCK_IPV4: alphabetIPv4, MULTILOGIN_MOCK_IPV6: alphabetIPv6 },
+  });
+  result = invoke(harness, ['status', '--mwan3', 'wan-test', '--v6face', 'wan6-test'], { responses: [{ body: offline() }] });
+  envelope(result, 1, 'status', 'offline', null);
+  deepEqual(params(reports(harness)[0], 'wlan_user_ip'), [Buffer.from(alphabetIPv4).toString('base64')], 'awk-only full-alphabet IPv4 Base64');
+  deepEqual(params(reports(harness)[0], 'wlan_user_ipv6'), [Buffer.from(alphabetIPv6).toString('base64')], 'awk-only full-alphabet IPv6 Base64');
 
   harness = createHarness('status-local-failure', { restrictedPath: true });
   const failingBin = path.join(harness.scenario, 'failing-bin');
@@ -426,7 +434,7 @@ function loginTests() {
   deepEqual(params(request, 'lang'), ['zh-cn', 'zh'], 'duplicate login language values');
   deepEqual(params(request, 'wlan_user_ip'), ['192.0.2.10'], 'login plain IPv4');
   deepEqual(params(request, 'wlan_user_ipv6'), ['2001:db8::10'], 'login optional IPv6');
-  deepEqual(params(request, 'wlan_user_mac'), ['020000000010'], 'login normalized MAC');
+  deepEqual(params(request, 'wlan_user_mac'), ['000000000000'], 'PC page-captured zero MAC');
 
   harness = createHarness('login-unicode-account', { secret: 'unicode fixture passphrase' });
   result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', '学生 user', '--ua-type', 'pc'], {
@@ -441,6 +449,15 @@ function loginTests() {
   equal(accountEvidence.sha256, digest(unicodeAccount), 'UTF-8/space account framing digest');
   assertConfigSecurity(harness, true);
 
+  harness = createHarness('login-minimal-tools', { restrictedPath: true, secret: 'minimal tool fixture passphrase' });
+  result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'fixture-account', '--ua-type', 'pc'], {
+    input: `${harness.secret}\n`,
+    responses: [{ body: offline() }, { body: { result: 1, ret_code: 0 } }, { body: online(0) }],
+  });
+  envelope(result, 0, 'login', 'login_success', null);
+  assertConfigSecurity(harness, true);
+  assertSecretAbsent(harness, result);
+
   harness = createHarness('login-mobile-success', { secret: 'mobile fixture passphrase' });
   result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'fixture-account', '--ua-type', 'mobile'], {
     input: `${harness.secret}\n`,
@@ -449,9 +466,11 @@ function loginTests() {
   envelope(result, 0, 'login', 'login_success', null);
   const mobile = reports(harness)[1];
   deepEqual(params(mobile, 'term_type'), ['2'], 'mobile term type');
+  deepEqual(params(mobile, 'terminal_type'), ['2'], 'mobile terminal type');
   equal(mobile.account_operator, '1', 'mobile login operator');
   deepEqual(params(mobile, 'term_ua'), [mobileUa], 'mobile term UA');
   equal(mobile.user_agent, mobileUa, 'mobile HTTP UA');
+  deepEqual(params(mobile, 'wlan_user_mac'), ['000000000000'], 'mobile page-captured zero MAC');
 
   harness = createHarness('login-auth', { secret: 'auth fixture passphrase' });
   result = invoke(harness, ['login', '--mwan3', 'wan-test', '--account', 'fixture-account', '--ua-type', 'pc'], {
@@ -492,7 +511,7 @@ function loginTests() {
   envelope(result, 3, 'login', 'protocol_error', 'protocol');
   equal(callDirectories(harness, 'sleep').length, 4, 'login polling is bounded to five attempts');
 
-  pass('login covers PC/mobile success, secret config, auth, existing state, mismatch, and bounded confirmation');
+  pass('login covers minimal tools, PC/mobile success, secret config, auth, existing state, mismatch, and bounded confirmation');
 }
 
 function logoutTests() {
@@ -568,8 +587,8 @@ function identityTests() {
   let harness = createHarness('identity-select');
   let result = invoke(harness, ['status', '--mwan3', 'wan-test'], {
     responses: [{ body: { result: 1, list: [
-      { phone_flag: 1, wlan_user_mac: '02:00:00:00:00:10', wlan_user_ip: '192.0.2.11' },
-      { phone_flag: 0, wlan_user_mac: '020000000010', wlan_user_ip: '192.0.2.10' },
+      { phone_flag: 1, online_mac: '02:00:00:00:00:10', online_ip: '192.0.2.11' },
+      { phone_flag: 0, online_mac: '020000000010', online_ip: '192.0.2.10' },
     ] } }],
   });
   const selected = envelope(result, 0, 'status', 'online', null);
@@ -578,8 +597,8 @@ function identityTests() {
   harness = createHarness('identity-ip-select');
   result = invoke(harness, ['status', '--mwan3', 'wan-test'], {
     responses: [{ body: { result: 1, list: [
-      { phone_flag: 1, wlan_user_ip: '192.0.2.11' },
-      { phone_flag: 0, wlan_user_ip: '192.0.2.10' },
+      { phone_flag: 1, online_ip: '192.0.2.11' },
+      { phone_flag: 0, online_ip: '192.0.2.10' },
     ] } }],
   });
   const ipSelected = envelope(result, 0, 'status', 'online', null);

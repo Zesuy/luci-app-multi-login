@@ -55,6 +55,13 @@ var callScriptGetDraft = rpc.declare({
     expect: { '': {} }
 });
 
+var callScriptCreateDraft = rpc.declare({
+    object: 'multilogin',
+    method: 'script_create_draft',
+    params: ['expected_sha256', 'expected_generation'],
+    expect: { '': {} }
+});
+
 var callScriptSaveDraft = rpc.declare({
     object: 'multilogin',
     method: 'script_save_draft',
@@ -194,7 +201,7 @@ return view.extend({
         }
 
         function operationDisabled(key, unavailable) {
-            return !!unavailable || pending(key);
+            return !!unavailable || state.busy || pending(key);
         }
 
         function setFeedback(kind, message) {
@@ -213,22 +220,6 @@ return view.extend({
 
         function customDraftIsSaved() {
             return !state.conflict && getDraftText() === state.savedDraftText;
-        }
-
-        function requireCustomDraftSaved() {
-            if (state.conflict) {
-                setFeedback('error', _('服务器草稿已变化。请先重新载入最新服务器草稿。'));
-                draw();
-                return false;
-            }
-
-            if (!customDraftIsSaved()) {
-                setFeedback('error', _('编辑器内容尚未保存。请先保存草稿或重新载入服务器草稿，再验证或激活。'));
-                draw();
-                return false;
-            }
-
-            return true;
         }
 
         function requireCustomMutationAllowed() {
@@ -421,6 +412,108 @@ return view.extend({
             });
         }
 
+        function runCustomApply() {
+            if (state.busy || !requireCustomMutationAllowed())
+                return;
+            if (!getDraftText()) {
+                setFeedback('error', _('脚本内容不能为空。'));
+                draw();
+                return;
+            }
+            if (!confirm(_('确认保存并启用这个自定义脚本吗？系统会先保存，再以 root 权限执行自检；只有验证通过才会替换当前活动脚本。')))
+                return;
+
+            var draftState = state.draft && state.draft.ok ? summary(state.draft.data, 'summary') : emptySummary();
+            var draftSaved = customDraftIsSaved();
+            var workGeneration = generation();
+            var workSummary = draftState;
+            var savedDuringApply = false;
+            var outcome = { kind: 'status', message: _('正在保存并验证自定义脚本…') };
+
+            function accept(response, summaryName) {
+                if (!response || !response.ok)
+                    return Promise.reject(response || responseError());
+                var data = response.data || {};
+                workGeneration = Number(data.generation);
+                workSummary = summary(data, summaryName);
+                if (!Number.isInteger(workGeneration) || workGeneration < 0 || !hash(workSummary))
+                    return Promise.reject({ ok: false, code: 'invalid_state', data: {} });
+                return response;
+            }
+
+            state.busy = true;
+            state.busyKey = 'custom-apply';
+            setFeedback(outcome.kind, outcome.message);
+            draw();
+
+            var sequence = draftSaved ? Promise.resolve() :
+                L.resolveDefault(callScriptSaveDraft(getDraftText(), state.draftBaseHash, workGeneration), responseError())
+                    .then(function (response) { return accept(response, 'custom'); })
+                    .then(function (response) { savedDuringApply = true; return response; });
+
+            sequence.then(function () {
+                if (workSummary.status === 'validated')
+                    return null;
+                return L.resolveDefault(callScriptValidate('custom', hash(workSummary), workGeneration, true), responseError())
+                    .then(function (response) { return accept(response, 'summary'); });
+            }).then(function () {
+                return L.resolveDefault(callScriptActivate('custom', hash(workSummary), workGeneration, true, false), responseError());
+            }).then(function (response) {
+                if (!response || !response.ok)
+                    return Promise.reject(response || responseError());
+                outcome = { kind: 'status', message: _('自定义脚本已保存、验证并启用。') };
+                return refresh({ preserveTypedDraft: true, updateDraftBase: true });
+            }).catch(function (response) {
+                var failure = preserveConflictDraft(state, response);
+                var adoptSavedBase = savedDuringApply && (!response || response.code !== 'conflict');
+                state.conflict = state.conflict || failure.conflict;
+                outcome = { kind: 'error', message: failure.message };
+                return refresh({ preserveTypedDraft: true, updateDraftBase: adoptSavedBase });
+            }).then(function () {
+                state.busy = false;
+                state.busyKey = '';
+                setFeedback(outcome.kind, outcome.message);
+                draw();
+            });
+        }
+
+        function createDraftFromActive() {
+            var active = summary(currentInfo(), 'active');
+            var typedText = getDraftText();
+            if (!active.present || !hash(active) || currentInfo().mode !== 'managed') {
+                setFeedback('error', _('当前活动脚本不能作为浏览器草稿载入。您仍可在编辑器中粘贴完整脚本。'));
+                draw();
+                return;
+            }
+            if (!confirm(typedText ?
+                _('编辑器中尚未保存的内容将被当前托管脚本替换。确认继续吗？当前活动脚本不会被修改。') :
+                _('要把当前托管脚本复制为可编辑的自定义脚本吗？当前活动脚本不会被修改。')))
+                return;
+            runAction(_('载入当前脚本'), function () {
+                return callScriptCreateDraft(hash(active), generation());
+            }, { preserveTypedDraft: false, updateDraftBase: true, actionKey: 'custom-create' });
+        }
+
+        function discardCustomChanges(draftState, draftSaved) {
+            if (!requireCustomMutationAllowed())
+                return;
+            if (!draftSaved) {
+                if (!confirm(_('放弃编辑器中尚未保存的修改吗？')))
+                    return;
+                state.draftText = state.savedDraftText;
+                setFeedback('status', _('未保存的修改已放弃。'));
+                draw();
+                return;
+            }
+            if (!draftState.present)
+                return;
+            if (!confirm(_('删除已保存的自定义脚本吗？当前活动脚本不会被删除。')))
+                return;
+            runAction(_('删除自定义脚本'), function () {
+                return callScriptDiscardDraft(hash(draftState), generation());
+            }, { preserveTypedDraft: false, updateDraftBase: true, actionKey: 'custom-discard' });
+        }
+
         function reloadServerDraft() {
             if (!confirm(_('要用最新服务器草稿替换编辑器内容吗？请先复制未保存的输入。')))
                 return;
@@ -460,12 +553,12 @@ return view.extend({
         function draw() {
             var info = currentInfo();
             var factory = summary(info, 'factory');
+            var active = summary(info, 'active');
             var custom = summary(info, 'custom');
             var draftState = state.draft && state.draft.ok ? summary(state.draft.data, 'summary') : custom;
             var draftLoadError = state.draft && !state.draft.ok && state.draft.code !== 'not_found';
             var draftMissing = !draftState.present;
-            var canValidateCustom = draftState.present && (draftState.status === 'draft' || draftState.status === 'validated');
-            var canActivateCustom = draftState.present && draftState.status === 'validated';
+            var customActive = info.mode === 'custom' && hash(active) && hash(active) === hash(draftState);
             var managedUnavailable = !state.info.ok || info.recovery_required || state.busyKey === 'refresh';
             var customUnavailable = !state.info.ok || info.recovery_required || draftLoadError || state.busyKey === 'refresh' || state.busyKey === 'draft-reload';
             var textarea = E('textarea', {
@@ -476,7 +569,7 @@ return view.extend({
                 'spellcheck': 'false',
                 'wrap': 'off',
                 'aria-describedby': 'custom-draft-help custom-root-warning',
-                'disabled': disabledAttr(draftLoadError || pending('custom-save') || pending('custom-validate') || pending('custom-activate') || pending('custom-discard') || pending('draft-reload'))
+                'disabled': disabledAttr(draftLoadError || state.busy)
             }, state.draftText);
 
             textarea.addEventListener('input', function () {
@@ -484,19 +577,18 @@ return view.extend({
             });
 
             var draftSaved = !state.conflict && textarea.value === state.savedDraftText;
-            var customPrimary = draftMissing || !draftSaved ? 'save' :
-                (draftState.status === 'draft' ? 'validate' : (canActivateCustom ? 'activate' : 'save'));
-
             function draftStatusLabel() {
+                if (customActive && draftSaved)
+                    return _('正在使用');
                 if (draftMissing)
-                    return _('没有已保存草稿');
+                    return _('尚未保存');
                 if (!draftSaved)
                     return _('有未保存修改');
                 if (draftState.status === 'validated')
-                    return _('已验证草稿');
+                    return _('已验证，可启用');
                 if (draftState.status === 'draft')
-                    return _('已保存，待验证');
-                return _('已保存草稿');
+                    return _('已保存');
+                return _('已保存');
             }
 
             root.setAttribute('aria-busy', state.busy ? 'true' : 'false');
@@ -505,7 +597,7 @@ return view.extend({
                 E('div', { 'class': 'ml-page__header script-page-header' }, [
                     E('div', { 'class': 'ml-page__heading' }, [
                         E('h2', { 'class': 'ml-page__title' }, _('脚本维护')),
-                        E('p', { 'class': 'ml-page__description' }, _('选择托管更新或自定义草稿。托管操作只更新 cqu-portal.sh，所有执行步骤都由固定脚本 RPC 控制。'))
+                        E('p', { 'class': 'ml-page__description' }, _('更新托管脚本，或手动维护一个自定义 cqu-portal.sh。'))
                     ]),
                     E('div', { 'class': 'ml-page__header-actions' }, [
                         nativeButton(state.busyKey === 'refresh' ? _('正在刷新…') : _('刷新脚本状态'), retryLoad, pending('refresh'))
@@ -534,7 +626,7 @@ return view.extend({
                         'aria-selected': state.path === 'custom' ? 'true' : 'false',
                         'aria-controls': 'custom-path',
                         'click': function () { state.path = 'custom'; draw(); }
-                    }, _('自定义草稿'))
+                    }, _('自定义脚本'))
                 ]),
                 (!state.info.ok || info.recovery_required || draftLoadError) ? E('div', { 'class': 'alert-message', 'role': 'alert', 'aria-live': 'assertive' }, [
                     E('p', {}, info.recovery_required ? actionError({ code: 'recovery_required' }) :
@@ -575,89 +667,36 @@ return view.extend({
                     E('section', { 'class': 'ml-section ml-card script-panel', 'aria-labelledby': 'custom-heading' }, compact([
                         E('div', { 'class': 'ml-section__header' }, [
                             E('div', {}, [
-                                E('h3', { 'id': 'custom-heading' }, _('自定义草稿')),
-                                E('p', { 'class': 'ml-help' }, _('自定义内容始终先保存为服务器端草稿，再验证和明确激活；它不会直接编辑活动脚本。'))
+                                E('h3', { 'id': 'custom-heading' }, _('自定义脚本')),
+                                E('p', { 'class': 'ml-help' }, _('在这里粘贴或修改完整脚本。保存不会改变当前运行脚本；“保存并启用”会先验证，验证通过后才切换。'))
                             ]),
-                            statusBadge(draftStatusLabel(), draftMissing || !draftSaved ? 'warning' : (draftState.status === 'validated' ? 'success' : 'neutral'))
+                            statusBadge(draftStatusLabel(), draftMissing || !draftSaved ? 'warning' : (customActive || draftState.status === 'validated' ? 'success' : 'neutral'))
                         ]),
-                        E('p', { 'id': 'custom-root-warning', 'class': 'alert-message', 'role': 'alert' }, _('安全警告：这是 root 级代码编辑器。请勿写入账户凭据或其他机密；验证会以 root 权限执行保存的精确草稿。')),
-                        E('ol', { 'class': 'script-steps' }, [
-                            E('li', { 'class': 'script-step script-step--current' }, [
-                                E('h4', {}, _('1. 编辑草稿')),
-                                E('label', { 'for': 'custom-draft' }, _('自定义草稿')),
-                                textarea,
-                                E('p', { 'id': 'custom-draft-help', 'class': 'cbi-section-descr' }, _('代码文本可在编辑器内滚动；保存只写入服务器端草稿，验证不会自动激活。'))
-                            ]),
-                            E('li', { 'class': 'script-step' }, compactChildren([
-                                E('h4', {}, _('2. 草稿状态')),
-                                E('p', { 'class': 'ml-help' }, draftStatusLabel()),
-                                state.conflict ? E('p', { 'class': 'alert-message', 'role': 'alert' }, _('服务器上的草稿已变化。已保留您的输入；解决冲突前不能保存、验证、激活或丢弃。')) : null,
-                                !draftMissing && draftSaved ? null : E('p', { 'class': 'ml-help' }, draftMissing ? _('当前没有保存草稿；先保存草稿，后续危险操作才会显示。') : _('检测到未保存修改；先保存草稿，后续危险操作才会显示。'))
-                            ])),
-                            E('li', { 'class': 'script-step' }, [
-                                E('h4', {}, _('3. 保存草稿')),
-                                E('div', { 'class': 'script-actions' }, [
-                                    operationButton(_('保存草稿'), function () {
-                                        if (!requireCustomMutationAllowed())
-                                            return;
-                                        runAction(_('保存草稿'), function () {
-                                            return callScriptSaveDraft(getDraftText(), state.draftBaseHash, generation());
-                                        }, { preserveTypedDraft: true, updateDraftBase: true, actionKey: 'custom-save' });
-                                    }, 'custom-save', customUnavailable || state.conflict, customPrimary === 'save')
-                                ])
-                            ]),
-                            E('li', { 'class': 'script-step' }, compactChildren([
-                                E('h4', {}, _('4. 验证草稿')),
-                                draftState.status === 'validated' && draftSaved ? E('p', { 'class': 'script-step__result' }, statusBadge(_('草稿已验证'), 'success')) :
-                                    (canValidateCustom && draftSaved ? E('p', { 'class': 'ml-help' }, _('验证会以 root 权限执行已保存草稿；验证通过前不能激活。')) : E('p', { 'class': 'ml-help' }, _('保存草稿后，此处才会开放验证。'))),
-                                canValidateCustom && draftSaved && draftState.status === 'draft' ? E('div', { 'class': 'script-actions' }, [
-                                    operationButton(_('验证草稿'), function () {
-                                        if (!requireCustomDraftSaved())
-                                            return;
-                                        if (!confirm(_('确认验证已保存的自定义草稿吗？验证会以 root 权限执行。')))
-                                            return;
-                                        runAction(_('验证草稿'), function () {
-                                            return callScriptValidate('custom', hash(draftState), generation(), true);
-                                        }, { preserveTypedDraft: true, actionKey: 'custom-validate' });
-                                    }, 'custom-validate', customUnavailable || state.conflict, customPrimary === 'validate')
-                                ]) : null
-                            ])),
-                            E('li', { 'class': 'script-step' }, [
-                                E('h4', {}, _('5. 明确确认激活')),
-                                canActivateCustom && draftSaved ? E('div', {}, [
-                                    E('p', { 'class': 'ml-help' }, _('草稿已验证。激活会替换当前活动脚本；如需恢复，请使用软件包内置脚本。')),
-                                    E('div', { 'class': 'script-actions' }, [
-                                        operationButton(_('确认激活草稿'), function () {
-                                            if (!requireCustomDraftSaved())
-                                                return;
-                                            if (!confirm(_('确认激活已验证的自定义草稿吗？这会替换当前活动脚本。')))
-                                                return;
-                                            runAction(_('确认激活草稿'), function () {
-                                                return callScriptActivate('custom', hash(draftState), generation(), true, false);
-                                            }, { preserveTypedDraft: true, actionKey: 'custom-activate' });
-                                        }, 'custom-activate', customUnavailable || state.conflict, customPrimary === 'activate')
-                                    ])
-                                ]) : E('p', { 'class': 'ml-help' }, _('验证通过后，此处才会开放激活确认。'))
-                            ]),
-                            E('li', { 'class': 'script-step' }, [
-                                E('h4', {}, _('6. 丢弃')),
-                                !draftMissing ? E('div', {}, [
-                                    E('p', { 'class': 'ml-help' }, _('丢弃服务器端草稿不可撤销；不会删除保留的迁移备份。')),
-                                    E('div', { 'class': 'script-actions' }, [
-                                        operationButton(_('丢弃草稿'), function () {
-                                            if (!requireCustomMutationAllowed())
-                                                return;
-                                            if (!confirm(_('要丢弃已保存的自定义草稿吗？无法通过浏览器撤销。')))
-                                                return;
-                                            runAction(_('丢弃草稿'), function () {
-                                                return callScriptDiscardDraft(hash(draftState), generation());
-                                            }, { preserveTypedDraft: false, updateDraftBase: true, actionKey: 'custom-discard' });
-                                        }, 'custom-discard', customUnavailable || state.conflict, false, true)
-                                    ])
-                                ]) : E('p', { 'class': 'ml-help' }, _('没有草稿可丢弃。保存草稿后才会显示此危险操作。'))
-                            ])
+                        E('p', { 'id': 'custom-root-warning', 'class': 'script-root-warning', 'role': 'note' }, _('此处执行 root 级代码。不要把账号、密码或其他机密写入脚本。')),
+                        draftMissing ? E('div', { 'class': 'ml-feedback ml-feedback--empty' }, compactChildren([
+                            E('p', {}, _('当前没有已保存的自定义脚本。可以直接粘贴完整脚本，或载入当前托管脚本作为修改起点。')),
+                            info.mode === 'managed' && active.present ? operationButton(_('载入当前脚本'), createDraftFromActive, 'custom-create', customUnavailable, false) : null
+                        ])) : null,
+                        E('div', { 'class': 'script-editor-shell' }, [
+                            E('label', { 'for': 'custom-draft', 'class': 'ml-field__label' }, _('脚本内容')),
+                            textarea,
+                            E('p', { 'id': 'custom-draft-help', 'class': 'cbi-section-descr' }, _('编辑器内可横向滚动；保存后仍不会自动启用。'))
                         ]),
-                        nativeButton(_('重新载入最新服务器草稿'), reloadServerDraft, customUnavailable || !state.draft.ok)
+                        state.conflict ? E('p', { 'class': 'alert-message', 'role': 'alert' }, _('服务器上的自定义脚本已变化。您的输入仍在编辑器中；请重新载入后再继续。')) : null,
+                        E('div', { 'class': 'script-actions script-custom-actions' }, [
+                            operationButton(_('保存'), function () {
+                                if (!requireCustomMutationAllowed())
+                                    return;
+                                runAction(_('保存自定义脚本'), function () {
+                                    return callScriptSaveDraft(getDraftText(), state.draftBaseHash, generation());
+                                }, { preserveTypedDraft: true, updateDraftBase: true, actionKey: 'custom-save' });
+                            }, 'custom-save', customUnavailable || state.conflict || draftSaved || !textarea.value, !customActive),
+                            operationButton(customActive && draftSaved ? _('已启用') : _('保存并启用'), runCustomApply, 'custom-apply', customUnavailable || state.conflict || !textarea.value || (customActive && draftSaved), true),
+                            nativeButton(_('重新载入'), reloadServerDraft, customUnavailable || !state.draft.ok),
+                            operationButton(draftSaved ? _('删除自定义脚本') : _('放弃修改'), function () {
+                                discardCustomChanges(draftState, draftSaved);
+                            }, 'custom-discard', customUnavailable || state.conflict || (draftMissing && draftSaved), false, true)
+                        ])
                     ]))
                 ])
             ]));
@@ -674,11 +713,6 @@ return view.extend({
             '.multilogin-script-manager .script-path-tab--selected { border-color: var(--primary-color-high, #1677ff); box-shadow: inset 0 -3px 0 var(--primary-color-high, #1677ff); font-weight: 600; }',
             '.multilogin-script-manager .script-boundary { border-inline-start: .3rem solid var(--warning-color-high, #8a5a00); }',
             '.multilogin-script-manager .script-boundary p { margin: .35rem 0 0; }',
-            '.multilogin-script-manager .script-steps { margin: 0; padding-inline-start: 1.5rem; min-width: 0; }',
-            '.multilogin-script-manager .script-step { min-width: 0; margin: 0 0 1rem; padding: 1rem; border: 1px solid var(--border-color-medium, rgba(127, 127, 127, .28)); border-radius: .5rem; background: var(--background-color-low, rgba(127, 127, 127, .035)); }',
-            '.multilogin-script-manager .script-step:last-child { margin-bottom: 0; }',
-            '.multilogin-script-manager .script-step h4 { margin-bottom: .5rem; }',
-            '.multilogin-script-manager .script-step__result { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; }',
             '.multilogin-script-manager .script-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; min-width: 0; }',
             '.multilogin-script-manager .script-actions .cbi-button { min-height: 44px; touch-action: manipulation; }',
             '.multilogin-script-manager .script-checkbox { display: flex; align-items: flex-start; gap: .5rem; min-width: 0; }',
@@ -688,7 +722,7 @@ return view.extend({
             '.multilogin-script-manager .script-metadata dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }',
             '.multilogin-script-manager .script-editor { box-sizing: border-box; display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 18rem; max-height: 70vh; overflow: auto; white-space: pre; font-family: monospace; }',
             '.multilogin-script-manager .script-feedback:empty, .multilogin-script-manager > .alert-message:empty { display: none; }',
-            '@media (max-width: 600px) { .multilogin-script-manager .script-path-tab { flex-basis: 100%; } .multilogin-script-manager .script-step { padding: .75rem; } }',
+            '@media (max-width: 600px) { .multilogin-script-manager .script-path-tab { flex-basis: 100%; } }',
             '@media (max-width: 375px) { .multilogin-script-manager .script-metadata-row { grid-template-columns: minmax(0, 1fr); } .multilogin-script-manager .script-actions .cbi-button { flex: 1 1 100%; } }'
         ].join('\n')));
         root.appendChild(content);

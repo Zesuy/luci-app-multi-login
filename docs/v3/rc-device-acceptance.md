@@ -6,10 +6,17 @@
 
 ## 1. 候选输入
 
+> **当前未完成：PC/Mobile 并存。** 已有页面点击抓包分别证明 PC
+> `operator=0, term_type=1, terminal_type=1 -> phone_flag=0` 与 Mobile
+> `operator=1, term_type=2, terminal_type=2 -> phone_flag=1`，但没有证明同一账号、
+> 同一出口上的两类会话可以同时保持在线。现有实机观察仍会互相顶号。不得把单次
+> 分类成功写成并存通过；`PORTAL-03A` 在原因明确并留下真实并发证据前保持
+> `NOT COMPLETED`，并阻塞 RC Portal 验收。
+
 | 输入 | 固定身份 | 当前离线证据 |
 | --- | --- | --- |
-| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.1-r19_all.ipk` | CI artifact checksum required before device acceptance |
-| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc1-r19.apk` | CI artifact checksum required before device acceptance |
+| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.1-r23_all.ipk` | CI artifact checksum required before device acceptance |
+| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc1-r23.apk` | CI artifact checksum required before device acceptance |
 | 支持的 v2 降级包 | `luci-app-multilogin_2.2.0-4_all.ipk`，源码提交 `fb272e8285c65415dea8a9a359a4204b94be06a0` | 使用官方 23.05.6 x86_64 SDK 离线重建；SHA-256 `bd3de0f4dfbd13a9bd84ab8f63f9875dcd99c232ad23a53d9009dba5dc2f4f1e` |
 
 这些哈希描述本次本地构建，不替代发布签名。项目当前没有已冻结的签名密钥或签名格式；若产品要求密码学签名，必须先由产品所有者做出决定，不能临时生成并宣称为既有信任根。
@@ -137,8 +144,8 @@ pgrep -af '/etc/multilogin/login_control.bash'
 | ID | 场景 | 关键验收 |
 | --- | --- | --- |
 | `PKG-01` | 23.05 全新安装 | 服务被 enable 但不强制 start；`global.enabled=0`；没有占位账号/实例；安装文件、conffile 和模式与 IPK 一致。 |
-| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.1-r19` 控制版本。 |
-| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc1-r19`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
+| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.1-r23` 控制版本。 |
+| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc1-r23`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
 | `PKG-03` | v2 stock 升级，disabled/stopped | UCI 与时间字段保留；服务仍 disabled/stopped；stock 脚本进入 Managed。 |
 | `PKG-04` | v2 stock 升级，enabled/stopped | enabled 与 running 独立保留；不得隐式启动。 |
 | `PKG-05` | v2 stock 升级，enabled/running | 只在先前 running 时恢复运行；无重复 daemon。 |
@@ -167,6 +174,7 @@ opkg install --force-downgrade <VERIFIED_V2_IPK>
 | `PORTAL-01B` | dual-stack status | 实际解析 IPv4/IPv6/MAC，IPv6 按合同编码；身份过滤唯一；缺失 IPv6 时不能伪造 dual-stack PASS。 |
 | `PORTAL-02` | PC login | password 只走 stdin；进程 argv 无密码/UA 空格拆分；成功后五次界内观察 `phone_flag=0`。 |
 | `PORTAL-03` | Mobile login | 与 `PORTAL-02` 相同，观察 `phone_flag=1`，HTTP UA 与 `term_ua` 字节相同。 |
+| `PORTAL-03A` | PC/Mobile 同时在线 | 使用明确授权的隔离账号与同一目标出口，分别建立 PC/Mobile 会话并持续观察两条唯一记录；任一登录使另一会话离线、只有一条记录、身份无法唯一消歧或仅凭单次 `phone_flag` 推断，均不得 PASS。当前状态：`NOT COMPLETED`。 |
 | `PORTAL-04` | 已在线/错误类型 | 正确类型返回 already-online；错误类型返回 classification mismatch 且不自动 logout/替换。 |
 | `PORTAL-05` | auth/transport/interface/dependency 失败 | 分类、exit 和日志稳定；无原始 portal body；失败不会忙循环。受控网络失败另需 `A-FAULT`。 |
 | `PORTAL-06` | logout 已离线 | 幂等 already-offline，不发送不必要的状态变更。 |
@@ -235,10 +243,10 @@ dual-stack 变体只允许增加已核对的 `--v6face <IFACE>`。操作员在�
 | `SCRIPT-03` | activate | 二次确认；活动脚本、LKG、generation、mode/source 一致；有实例时真实 status 验证，无实例时只允许 `skipped_no_instance`。 |
 | `SCRIPT-04` | 激活失败/rollback_required | 事务备份恢复原活动脚本，generation/LKG 不前移；恢复失败时 journal/backup 保留并阻止启动。 |
 | `SCRIPT-05` | rollback/restore | 精确 expected hash/generation；rollback 可交换 LKG；factory restore 使用包管理 factory，不覆盖 Custom 备份。 |
-| `SCRIPT-06` | Custom draft/conflict | 保存不激活；base-hash 冲突不丢文本；验证/激活分别确认；Managed candidate 不覆盖 draft/preserved copy。 |
+| `SCRIPT-06` | Custom script/conflict | 保存不激活；“保存并启用”在一次明确 root-code 确认后严格按保存→验证→激活执行；任一步失败不丢编辑器文本，保存成功但后续失败必须采用新 base hash；Managed candidate 不覆盖 draft/preserved copy。 |
 | `SCRIPT-07` | reboot recovery（需 `A-REBOOT`） | prepared/active_replaced/verified/rollback_required 的真实磁盘状态按合同收敛；无法证明时保持阻塞。 |
-| `SCRIPT-08` | 并发 script RPC/锁 | 两个 stage/validate/activate/rollback/save-draft 操作不能同时提交；失败者得到 conflict/busy，generation 只递增一次，无候选/LKG 串写。 |
-| `SCRIPT-09` | 低空间/写入中断/原子性（需 `A-FAULT`） | free-space 检查在写前失败；中断后只存在完整旧/新文件，mode/owner 正确；事务备份和 journal 足以恢复且唯一副本不丢失。 |
+| `SCRIPT-08` | 并发 script RPC/锁 | 两个 stage/validate/activate/rollback/create-draft/save-draft 操作不能同时提交；失败者得到 conflict/busy，generation 只递增一次，无候选/LKG/Custom 串写。`create-draft` 只接受哈希/代次匹配的 Managed active，已有草稿必须拒绝。 |
+| `SCRIPT-09` | 低空间/写入中断/原子性（需 `A-FAULT`） | free-space 检查在写前失败；`create-draft` 复制后哈希必须与 active 精确一致且 mode 为 0600；中断后只存在完整旧/新文件，mode/owner 正确；复制或状态写入失败必须清理未提交草稿，事务备份和 journal 足以恢复且唯一副本不丢失。 |
 
 当前固定 Raw URL 指向 `main`。要实际验证“有更新”的 stage/activate/rollback，需要先有经过审查并获 `A-GITHUB` 授权的 main 上 shell-only SemVer 增量；不得为了测试而改 URL、DNS 劫持或启用本地 HTTP 模拟。固定 URL 的真实 3xx 负例在 GitHub 不返回重定向时无法制造，必须由产品所有者选择受控真实网络方法或明确修改验收合同，不能伪造 PASS。
 

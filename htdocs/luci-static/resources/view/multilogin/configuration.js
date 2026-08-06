@@ -37,6 +37,15 @@ function input(id, label, value, type, help) {
         ]))
     ]);
 }
+function select(id, label, options, help) {
+    return E('div', { 'class': 'ml-field' }, [
+        E('label', { 'class': 'ml-field__label', 'for': id }, label),
+        E('div', { 'class': 'ml-field__control' }, compact([
+            E('select', { 'id': id, 'class': 'cbi-input-select', 'aria-describedby': help ? id + '-help' : null }, options),
+            help ? E('div', { 'id': id + '-help', 'class': 'ml-field__help' }, help) : null
+        ]))
+    ]);
+}
 function notice(state, error) {
     return state.feedback ? E('div', { 'class': 'ml-feedback ' + (error ? 'ml-feedback--error' : 'ml-feedback--success'), 'role': error ? 'alert' : 'status', 'aria-live': error ? 'assertive' : 'polite', 'aria-atomic': 'true' }, E('p', {}, state.feedback)) : null;
 }
@@ -59,7 +68,7 @@ return view.extend({
     },
 
     render: function (initial) {
-        var state = { settings: initial[0] || failed(), accounts: initial[1] || failed(), instances: initial[2] || failed(), busy: false, feedback: '', feedbackKind: 'status', advancedOpen: false };
+        var state = { settings: initial[0] || failed(), accounts: initial[1] || failed(), instances: initial[2] || failed(), instanceResults: {}, busy: false, feedback: '', feedbackKind: 'status', advancedOpen: false };
         var root = E('div', { 'class': 'cbi-map multilogin-page ml-page ml-page--configuration', 'aria-busy': 'false' });
 
         function refresh(message) {
@@ -78,26 +87,37 @@ return view.extend({
                     state.feedback = _('部分配置无法读取。请重试；未显示的数据不会被修改。');
                     state.feedbackKind = 'error';
                 } else {
-                    state.feedback = _('配置已刷新。');
+                    state.feedback = message || _('配置已刷新。');
                 }
                 draw();
             });
         }
 
-        function run(request, success, revealAdvanced) {
+        function run(request, success, revealAdvanced, failure, onResponse, refreshAfter) {
             if (state.busy)
                 return;
             if (revealAdvanced)
                 state.advancedOpen = true;
-            state.busy = true; state.feedback = _('正在处理…'); state.feedbackKind = 'status'; draw();
-            L.resolveDefault(request(), failed()).then(function (response) {
+            state.busy = true; state.feedback = _('正在处理…'); state.feedbackKind = 'status';
+            var pending = L.resolveDefault(request(), failed());
+            draw();
+            return pending.then(function (response) {
+                if (onResponse)
+                    onResponse(response);
                 if (!response.ok) {
                     if (revealAdvanced)
                         state.advancedOpen = true;
-                    state.feedback = responseMessage(response); state.feedbackKind = 'error'; state.busy = false; draw();
+                    state.feedback = typeof failure === 'function' ? failure(response) : responseMessage(response);
+                    state.feedbackKind = 'error'; state.busy = false; draw();
                     return;
                 }
-                state.feedback = success || _('操作已完成。'); state.feedbackKind = 'status';
+                state.feedback = typeof success === 'function' ? success(response) : (success || _('操作已完成。'));
+                state.feedbackKind = 'status';
+                if (refreshAfter === false) {
+                    state.busy = false;
+                    draw();
+                    return;
+                }
                 return refresh(state.feedback);
             });
         }
@@ -126,16 +146,23 @@ return view.extend({
             var key = String(Date.now()), edit = !!instance.section;
             var alias = 'ml-instance-alias-' + key, iface = 'ml-instance-iface-' + key, v6 = 'ml-instance-v6-' + key, account = 'ml-instance-account-' + key, enabled = 'ml-instance-enabled-' + key, ua = 'ml-instance-ua-' + key;
             function choices(values, selected, emptyLabel) { return [E('option', { value: '' }, emptyLabel || _('请选择'))].concat(values.map(function (value) { return E('option', { value: value[0], selected: value[0] === selected ? 'selected' : null }, value[1]); })); }
+            var interfaceChoices = interfaces.map(function (name) { return [name, name]; });
+            function choicesWithCurrent(current) {
+                var values = interfaceChoices.slice();
+                if (current && !interfaces.includes(current))
+                    values.push([current, _('%s（当前配置，暂不可用）').format(current)]);
+                return values;
+            }
             modal(edit ? _('编辑登录任务') : _('新增登录任务'), [
                 E('div', { 'class': 'ml-page ml-section ml-card ml-modal' }, [
                     E('p', { 'class': 'ml-help' }, _('保存登录任务不会自动登录或重启服务；可在任务列表中按需执行状态、登录或注销操作。')),
                     E('div', { 'class': 'ml-form-grid' }, [
-                        E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title', 'for': enabled }, _('启用')), E('div', { 'class': 'cbi-value-field' }, E('input', { id: enabled, type: 'checkbox', checked: instance.enabled === '1' ? 'checked' : null }))]),
+                        E('div', { 'class': 'ml-field' }, [E('label', { 'class': 'ml-field__label', 'for': enabled }, _('启用')), E('div', { 'class': 'ml-field__control ml-checkbox-control' }, E('input', { id: enabled, type: 'checkbox', checked: instance.enabled === '1' ? 'checked' : null }))]),
                         input(alias, _('别名'), instance.alias),
-                        E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title', 'for': iface }, _('IPv4 接口')), E('div', { 'class': 'cbi-value-field' }, E('select', { id: iface, class: 'cbi-input-select' }, choices(interfaces.map(function (name) { return [name, name]; }), instance.interface)))]),
-                        input(v6, _('IPv6 接口（可选）'), instance.v6face),
-                        E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title', 'for': account }, _('账号')), E('div', { 'class': 'cbi-value-field' }, E('select', { id: account, class: 'cbi-input-select' }, choices(accounts.map(function (entry) { return [entry.section, entry.alias || entry.username || entry.section]; }), instance.account)))]),
-                        E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title', 'for': ua }, _('UA 类型')), E('div', { 'class': 'cbi-value-field' }, E('select', { id: ua, class: 'cbi-input-select' }, [E('option', { value: 'pc', selected: instance.ua_type !== 'mobile' ? 'selected' : null }, 'PC'), E('option', { value: 'mobile', selected: instance.ua_type === 'mobile' ? 'selected' : null }, _('移动端'))]))])
+                        select(iface, _('IPv4 接口'), choices(choicesWithCurrent(instance.interface), instance.interface)),
+                        select(v6, _('IPv6 接口（可选）'), choices(choicesWithCurrent(instance.v6face), instance.v6face, _('不使用 IPv6 接口'))),
+                        select(account, _('账号'), choices(accounts.map(function (entry) { return [entry.section, entry.alias || entry.username || entry.section]; }), instance.account)),
+                        select(ua, _('UA 类型'), [E('option', { value: 'pc', selected: instance.ua_type !== 'mobile' ? 'selected' : null }, 'PC'), E('option', { value: 'mobile', selected: instance.ua_type === 'mobile' ? 'selected' : null }, _('移动端'))])
                     ]),
                     E('div', { 'class': 'right' }, [button(_('取消'), closeModal, false, 'cbi-button'), button(_('保存登录任务'), function () {
                         var values = { section: instance.section || '', enabled: document.getElementById(enabled).checked ? '1' : '0', alias: document.getElementById(alias).value, interface: document.getElementById(iface).value, v6face: document.getElementById(v6).value, account: document.getElementById(account).value, ua_type: document.getElementById(ua).value };
@@ -147,6 +174,45 @@ return view.extend({
         }
         function confirmAction(title, description, request, success, negative) {
             modal(title, [E('p', {}, description), E('div', { 'class': 'right' }, [button(_('取消'), closeModal, false, 'cbi-button'), button(_('确认'), function () { closeModal(); run(request, success); }, false, negative ? 'cbi-button-negative' : 'cbi-button-action')])]);
+        }
+
+        function instanceActionMessage(response, taskLabel) {
+            var data = response && response.data ? response.data : {};
+            var detail = data.status || responseMessage(response);
+            var diagnostics = [];
+            if (data.outcome)
+                diagnostics.push(_('结果：%s').format(data.outcome));
+            if (data.exit_code !== undefined && data.exit_code !== null)
+                diagnostics.push(_('退出码：%s').format(String(data.exit_code)));
+            if (!response.ok && response.code)
+                diagnostics.push(_('错误：%s').format(response.code));
+            return _('%s：%s').format(taskLabel, detail) + (diagnostics.length ? '（' + diagnostics.join('；') + '）' : '');
+        }
+
+        function runInstanceAction(instance, request) {
+            var taskLabel = instance.alias || instance.section;
+            run(request, function (response) {
+                return instanceActionMessage(response, taskLabel);
+            }, false, function (response) {
+                return instanceActionMessage(response, taskLabel);
+            }, function (response) {
+                var data = response && response.data ? response.data : {};
+                state.instanceResults[instance.section] = {
+                    ok: !!(response && response.ok),
+                    status: data.status || responseMessage(response),
+                    action: data.action || '',
+                    outcome: data.outcome || '',
+                    exitCode: data.exit_code,
+                    code: response && response.code ? response.code : ''
+                };
+            }, false);
+        }
+
+        function confirmInstanceAction(title, description, instance, request, negative) {
+            modal(title, [E('p', {}, description), E('div', { 'class': 'right' }, [
+                button(_('取消'), closeModal, false, 'cbi-button'),
+                button(_('确认'), function () { closeModal(); runInstanceAction(instance, request); }, false, negative ? 'cbi-button-negative' : 'cbi-button-action')
+            ])]);
         }
 
         function draw() {
@@ -179,21 +245,36 @@ return view.extend({
             function instanceRows() {
                 return instances.map(function (instance) {
                     var taskLabel = instance.alias || instance.section;
+                    var lastResult = state.instanceResults[instance.section];
                     return E('tr', { class: 'tr' }, [
                         E('td', { class: 'td', 'data-label': _('任务名称') }, taskLabel),
                         E('td', { class: 'td', 'data-label': _('账号') }, instance.account_label || instance.account || '—'),
                         E('td', { class: 'td', 'data-label': _('接口') }, E('span', { class: 'ml-code' }, instance.interface || '—')),
-                        E('td', { class: 'td', 'data-label': _('状态') }, status(instance.enabled === '1' ? _('已启用') : _('已停用'), instance.enabled === '1' ? 'success' : 'neutral')),
+                        E('td', { class: 'td', 'data-label': _('状态') }, E('div', { class: 'ml-task-state' }, compact([
+                            status(instance.enabled === '1' ? _('已启用') : _('已停用'), instance.enabled === '1' ? 'success' : 'neutral'),
+                            lastResult ? E('div', { class: 'ml-task-result', role: lastResult.ok ? 'status' : 'alert' }, compact([
+                                E('span', { class: 'ml-task-result__label' }, _('脚本返回')),
+                                status(lastResult.status, lastResult.ok ? 'success' : 'error'),
+                                E('code', { class: 'ml-task-result__detail' }, compact([
+                                    lastResult.action ? 'action=' + lastResult.action : null,
+                                    lastResult.outcome ? ' outcome=' + lastResult.outcome : null,
+                                    lastResult.exitCode !== undefined && lastResult.exitCode !== null ? ' exit=' + String(lastResult.exitCode) : null,
+                                    !lastResult.ok && lastResult.code ? ' code=' + lastResult.code : null
+                                ]))
+                            ])) : null
+                        ]))),
                         E('td', { class: 'td', 'data-label': _('UA') }, instance.ua_type === 'mobile' ? _('移动端') : 'PC'),
                         E('td', { class: 'td ml-table__actions', 'data-label': _('操作') }, [
                             E('div', { class: 'ml-actions' }, [
-                                button(_('编辑'), function () { instanceEditor(instance, accounts, interfaces); }, state.busy),
-                                button(_('检查状态'), function () { run(function () { return callCheckInstance(instance.section); }, _('状态检查已完成。')); }, state.busy)
-                            ]),
-                            E('div', { class: 'ml-actions ml-actions--danger' }, [
-                                button(_('登录'), function () { confirmAction(_('登录测试'), _('将对“%s”执行一次登录操作。').format(taskLabel), function () { return callTestInstance(instance.section); }, _('登录操作已完成。')); }, state.busy),
-                                button(_('注销'), function () { confirmAction(_('注销测试'), _('将对“%s”执行一次注销操作。').format(taskLabel), function () { return callLogoutInstance(instance.section); }, _('注销操作已完成。'), true); }, state.busy, 'cbi-button-negative'),
-                                button(_('删除'), function () { confirmAction(_('删除登录任务'), _('删除“%s”吗？').format(taskLabel), function () { return callDeleteInstance(instance.section); }, _('登录任务已删除。'), true); }, state.busy, 'cbi-button-negative')
+                                E('div', { class: 'ml-actions' }, [
+                                    button(_('编辑'), function () { instanceEditor(instance, accounts, interfaces); }, state.busy),
+                                    button(_('检查状态'), function () { runInstanceAction(instance, function () { return callCheckInstance(instance.section); }); }, state.busy)
+                                ]),
+                                E('div', { class: 'ml-actions ml-actions--danger' }, [
+                                    button(_('登录'), function () { confirmInstanceAction(_('确认登录'), _('将使用“%s”的已保存账号执行一次登录。').format(taskLabel), instance, function () { return callTestInstance(instance.section); }); }, state.busy),
+                                    button(_('注销'), function () { confirmInstanceAction(_('确认注销'), _('将对“%s”执行一次注销。').format(taskLabel), instance, function () { return callLogoutInstance(instance.section); }, true); }, state.busy, 'cbi-button-negative'),
+                                    button(_('删除'), function () { confirmAction(_('删除登录任务'), _('删除“%s”吗？').format(taskLabel), function () { return callDeleteInstance(instance.section); }, _('登录任务已删除。'), true); }, state.busy, 'cbi-button-negative')
+                                ])
                             ])
                         ])
                     ]);

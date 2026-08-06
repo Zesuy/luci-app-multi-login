@@ -20,11 +20,12 @@ const rpcSchemas = Object.freeze({
   script_rollback: ['expected_sha256', 'expected_generation', 'confirm_activate'],
   script_restore: ['expected_sha256', 'expected_generation', 'confirm_activate'],
   script_get_draft: [],
+  script_create_draft: ['expected_sha256', 'expected_generation'],
   script_save_draft: ['content', 'base_sha256', 'expected_generation'],
   script_discard_draft: ['expected_sha256', 'expected_generation'],
 });
 const readMethods = ['script_check', 'script_get_draft', 'script_info'];
-const writeMethods = ['script_activate', 'script_discard_draft', 'script_restore', 'script_rollback', 'script_save_draft', 'script_stage', 'script_validate'];
+const writeMethods = ['script_activate', 'script_create_draft', 'script_discard_draft', 'script_restore', 'script_rollback', 'script_save_draft', 'script_stage', 'script_validate'];
 let checks = 0;
 
 function pass(label) {
@@ -141,23 +142,19 @@ function savedDraftSafetyTests() {
   const runner = functionSource('runAction');
   assert.match(runner, /state\.conflict\s*=\s*state\.conflict\s*\|\|\s*failure\.conflict/, 'unrelated failures clear a sticky conflict');
 
-  for (const callPattern of [
-    /callScriptValidate\('custom'/g,
-    /callScriptActivate\('custom'/g,
-  ]) {
-    const call = [...source.matchAll(callPattern)][0];
-    assert.ok(call, `Custom safety call is absent: ${callPattern}`);
-    assert.match(source.slice(Math.max(0, call.index - 500), call.index), /requireCustomDraftSaved\(\)/, 'Custom validate/activate bypasses saved-text equality');
-  }
-  for (const callPattern of [
-    /callScriptValidate\('custom'/g,
-    /callScriptActivate\('custom'/g,
-    /callScriptDiscardDraft\(/g,
-  ]) {
-    const call = [...source.matchAll(callPattern)][0];
-    assert.ok(call, `Custom conflict-gated call is absent: ${callPattern}`);
-    assert.match(source.slice(call.index, call.index + 500), /state\.conflict/, 'conflict does not disable Custom validate/activate/discard');
-  }
+  const apply = functionSource('runCustomApply');
+  assert.match(apply, /requireCustomMutationAllowed\(\)/, 'combined Custom apply bypasses the sticky-conflict gate');
+  assert.match(apply, /getDraftText\(\)/, 'combined Custom apply does not capture the visible editor text');
+  assert.match(apply, /confirm\s*\(/, 'combined Custom apply has no explicit root-code confirmation');
+  for (const token of ['callScriptSaveDraft', "callScriptValidate('custom'", "callScriptActivate('custom'"])
+    assert.ok(apply.includes(token), `combined Custom apply omits ${token}`);
+  assert.ok(apply.indexOf('callScriptSaveDraft') < apply.indexOf("callScriptValidate('custom'"), 'Custom apply validates before saving');
+  assert.ok(apply.indexOf("callScriptValidate('custom'") < apply.indexOf("callScriptActivate('custom'"), 'Custom apply activates before validation');
+  assert.match(apply, /draftSaved\s*\?\s*Promise\.resolve\(\)\s*:/, 'Custom apply cannot distinguish saved from unsaved editor text');
+  assert.match(apply, /savedDuringApply\s*=\s*true[\s\S]*adoptSavedBase\s*=\s*savedDuringApply\s*&&\s*\(!response\s*\|\|\s*response\.code\s*!==\s*'conflict'\)[\s\S]*updateDraftBase:\s*adoptSavedBase/, 'post-save failures either retain a stale base or advance it across a conflict');
+  const discard = functionSource('discardCustomChanges');
+  assert.match(discard, /requireCustomMutationAllowed\(\)/, 'Custom discard bypasses the sticky-conflict gate');
+  assert.match(discard, /callScriptDiscardDraft\(/, 'saved Custom script cannot be discarded');
 
   const reloadCallAt = source.lastIndexOf('reloadServerDraft,');
   assert.ok(reloadCallAt >= 0, 'explicit Reload control is absent');
@@ -212,6 +209,9 @@ function stateAndMetadataTests() {
   assert.match(source, /state\.busy[\s\S]*aria-busy/, 'loading/busy state is not announced');
   assert.match(source, /draftMissing\s*\?/, 'draft empty state is absent');
   assert.match(source, /actionError[\s\S]*role':\s*'alert'/, 'error/recovery state is not rendered as an alert');
+  assert.doesNotMatch(source, /script-step|1\. 编辑草稿|2\. 草稿状态|3\. 保存草稿|4\. 验证草稿|5\. 明确确认激活|6\. 丢弃/, 'numbered draft workflow remains exposed in the management UI');
+  for (const label of ["_('保存')", "_('保存并启用')", "_('放弃修改')", "_('载入当前脚本')"])
+    assert.ok(source.includes(label), `simplified Custom action is absent: ${label}`);
 
   assert.match(source, /preserveTypedDraft/, 'mutations have no typed-text preservation policy');
   assert.match(source, /callScriptDiscardDraft[\s\S]*preserveTypedDraft:\s*false/, 'discard does not explicitly opt into replacing editor text');
@@ -226,8 +226,13 @@ function confirmationAndAccessibilityTests() {
     assert.ok(calls.length > 0, `${variable} is never called`);
     const customCalls = calls.filter((call) => /'custom'/.test(source.slice(call.index, call.index + 80)));
     for (const call of customCalls)
-      assert.match(source.slice(Math.max(0, call.index - 500), call.index), /confirm\s*\(/, `${variable} Custom call lacks an explicit nearby confirmation`);
+      assert.ok(functionSource('runCustomApply').includes(source.slice(call.index, call.index + 40)), `${variable} Custom call is outside the confirmed combined apply flow`);
   }
+  const createDraft = functionSource('createDraftFromActive');
+  assert.match(createDraft, /currentInfo\(\)\.mode !== 'managed'/, 'active-to-draft copy can expose a non-managed active script');
+  assert.match(createDraft, /confirm\s*\(/, 'active-to-draft copy lacks explicit confirmation');
+  assert.match(createDraft, /typedText[\s\S]*尚未保存的内容将被当前托管脚本替换/, 'active-to-draft copy can silently replace unsaved editor text');
+  assert.match(createDraft, /callScriptCreateDraft\(hash\(active\), generation\(\)\)/, 'active-to-draft copy lacks hash/generation concurrency');
   const rollbackDeclaration = rpcDeclarations().find((item) => item.variable === 'callScriptRollback');
   const rollbackCalls = [...source.matchAll(/\bcallScriptRollback\(/g)].filter((match) => match.index > rollbackDeclaration.end);
   assert.equal(rollbackCalls.length, 0, 'managed UI still exposes the previous-version rollback action');

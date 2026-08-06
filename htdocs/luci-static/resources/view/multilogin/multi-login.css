@@ -354,6 +354,61 @@
 	border-radius: .35rem;
 }
 
+.ml-modal {
+	width: min(48rem, 100%);
+	max-width: 100%;
+}
+
+.ml-modal .ml-form-grid > .ml-field {
+	display: block;
+	margin: 0;
+}
+
+.ml-modal .ml-field__label {
+	display: block;
+	padding: 0 0 var(--ml-space-2);
+}
+
+.ml-modal input.cbi-input-text,
+.ml-modal select.cbi-input-select {
+	box-sizing: border-box;
+	width: 100%;
+}
+
+.ml-checkbox-control {
+	display: flex;
+	align-items: center;
+	min-height: 44px;
+}
+
+.ml-task-state,
+.ml-task-result {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--ml-space-2);
+	min-width: 0;
+}
+
+.ml-task-result {
+	margin-top: var(--ml-space-2);
+	padding-top: var(--ml-space-2);
+	border-top: 1px solid var(--ml-border);
+}
+
+.ml-task-result__label {
+	color: var(--ml-text-muted);
+	font-size: .82rem;
+	font-weight: 600;
+}
+
+.ml-task-result__detail {
+	max-width: 100%;
+	color: var(--ml-text-muted);
+	font-size: .78rem;
+	overflow-wrap: anywhere;
+}
+
 .ml-page input:focus-visible,
 .ml-page select:focus-visible,
 .ml-page textarea:focus-visible,
@@ -433,6 +488,7 @@
 
 .ml-table .ml-actions {
 	align-items: flex-start;
+	min-width: 0;
 }
 
 .ml-code,
@@ -665,6 +721,28 @@
 	min-height: 18rem;
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 	line-height: 1.5;
+}
+
+.multilogin-script-manager .script-editor-shell {
+	margin-top: var(--ml-space-4);
+}
+
+.multilogin-script-manager .script-editor-shell > label {
+	display: block;
+	padding: 0 0 var(--ml-space-2);
+}
+
+.multilogin-script-manager .script-root-warning {
+	margin: var(--ml-space-3) 0;
+	padding: var(--ml-space-3);
+	border-inline-start: .25rem solid var(--ml-warning);
+	background: var(--ml-warning-surface);
+	line-height: 1.5;
+}
+
+.multilogin-script-manager .script-custom-actions {
+	padding-top: var(--ml-space-3);
+	border-top: 1px solid var(--ml-border);
 }
 
 .multilogin-script-manager .script-feedback:empty,

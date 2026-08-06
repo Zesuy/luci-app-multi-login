@@ -292,6 +292,16 @@ function logBoundaryTests() {
   assert.match(redact, /ml_(?:ipv4_token_valid|redact_ipv4_line)\s*/, 'strict IPv4 predicate is not part of redaction');
   if (/ml_redact_ipv4_line/.test(redact))
     assert.match(shellFunctionBody(config, 'ml_redact_ipv4_line'), /(?:255|ml_ipv4_token_valid)/, 'IPv4 redactor does not enforce octet bounds');
+  const manual = shellFunctionBody(rpc, 'record_manual_action');
+  assert.match(manual, /INSTANCE_CHILD_STARTED[\s\S]*source=manual action=\$action outcome=\$outcome exit=\$code/,
+    'manual action diagnostics do not prove child execution or use fixed fields');
+  assert.match(manual, /! -L \/var\/log\/multilogin\.log[\s\S]*chmod 0600[\s\S]*logger -t multilogin-action/,
+    'manual action diagnostics lack fixed-log symlink/mode protection or syslog');
+  const manualTemplate = /diagnostic="([^"]+)"/.exec(manual)?.[1];
+  assert.equal(manualTemplate, 'source=manual action=$action outcome=$outcome exit=$code',
+    'manual action diagnostic template is not the exact allowlist');
+  assert.doesNotMatch(manualTemplate, /(?:password|username|account|portal|result|alias|interface)/i,
+    'manual action diagnostic template includes non-allowlisted data');
   pass('log redaction uses UTF-8, strict IPv4 and complete-line byte-bound helpers');
 }
 
@@ -306,8 +316,8 @@ function aclAndMenuTests() {
   const readMethods = new Set(acl.read.ubus?.multilogin ?? []);
   const writeMethods = new Set(acl.write.ubus?.multilogin ?? []);
   for (const name of ['get_overview', 'get_settings', 'list_accounts', 'list_instances', 'service_status', 'get_diagnostics', 'get_logs', 'script_info', 'script_check', 'script_get_draft', 'list_auto']) assert.ok(readMethods.has(name), `missing read ${name}`);
-  for (const name of ['save_settings', 'save_account', 'delete_account', 'save_instance', 'delete_instance', 'service_action', 'clear_logs', 'quick_setup', 'remove_auto', 'network_recover', 'test_instance', 'logout_instance']) assert.ok(writeMethods.has(name), `missing write ${name}`);
-  for (const name of ['test_instance', 'logout_instance', 'save_account', 'delete_account', 'quick_setup', 'remove_auto']) assert.equal(readMethods.has(name), false, `mutator ${name} has read grant`);
+  for (const name of ['save_settings', 'save_account', 'delete_account', 'save_instance', 'delete_instance', 'service_action', 'clear_logs', 'quick_setup', 'remove_auto', 'network_recover', 'test_instance', 'logout_instance', 'script_create_draft']) assert.ok(writeMethods.has(name), `missing write ${name}`);
+  for (const name of ['test_instance', 'logout_instance', 'save_account', 'delete_account', 'quick_setup', 'remove_auto', 'script_create_draft']) assert.equal(readMethods.has(name), false, `mutator ${name} has read grant`);
   const menu = JSON.parse(read(menuPath));
   const visibleRoutes = Object.entries(menu)
     .filter(([route, entry]) => route.startsWith('admin/services/multilogin/') && entry.hidden !== true)
@@ -404,7 +414,7 @@ function luciRpcEnvelopeTests() {
 
 function luciNullChildTests() {
   const expectedCompactCalls = {
-    configuration: 2,
+    configuration: 6,
     diagnostics: 2,
     network: 3,
     overview: 2,
@@ -448,7 +458,69 @@ function rpcdSessionMetadataTests() {
   assert.match(script, /ubus_rpc_session/, 'script backend does not account for rpcd session metadata');
   assert.match(script, /ubus_rpc_session\)[\s\S]{0,200}ml_get_typed[^\n]*string/, 'script backend does not type-check rpcd session metadata');
   assert.match(script, /filtered="\$filtered\$\{filtered:\+ \}\$key"/, 'script backend does not rebuild business fields after metadata filtering');
-  pass('rpcd-injected ubus_rpc_session metadata is type-checked and excluded from business schemas');
+  const actionParser = shellFunctionBody(rpc, 'parse_action_section');
+  assert.match(actionParser, /jshn -r "\$trimmed"[\s\S]*?json_load "\$trimmed"/,
+    'instance action backend does not preserve native JSHN parser status');
+  assert.match(actionParser, /ubus_rpc_session\)[\s\S]*?json_get_type session_type ubus_rpc_session[\s\S]*?\[ "\$session_type" = string \]/,
+    'instance action backend does not type-check rpcd session metadata');
+  assert.match(actionParser, /business_keys="\$business_keys\$\{business_keys:\+ \}\$key"[\s\S]*?\[ "\$business_keys" = section \]/,
+    'instance action backend does not exclude session metadata from the exact business schema');
+  pass('rpcd-injected ubus_rpc_session metadata is type-checked and excluded from every business schema');
+}
+
+function instanceActionFeedbackTests() {
+  const configuration = read(path.join(viewDirectory, 'configuration.js'));
+  assert.match(configuration, /function runInstanceAction\(/, 'structured instance action runner is absent');
+  assert.match(configuration, /runInstanceAction\(instance,[\s\S]{0,120}callCheckInstance\(instance\.section\)/,
+    'instance status action does not use the structured action runner');
+  for (const field of ['data.status', 'data.outcome', 'data.exit_code'])
+    assert.ok(configuration.includes(field), `instance action feedback omits ${field}`);
+  assert.match(configuration, /state\.instanceResults\[instance\.section\][\s\S]*?action:[\s\S]*?outcome:[\s\S]*?exitCode:/,
+    'instance action response is not retained per task');
+  assert.match(configuration, /脚本返回[\s\S]*?action=[\s\S]*?outcome=[\s\S]*?exit=/,
+    'task row does not render the structured script return');
+  assert.match(configuration, /function runInstanceAction\([\s\S]*?\}, false\);/,
+    'instance actions unnecessarily refresh configuration and risk replacing the script return');
+  assert.match(configuration, /if \(refreshAfter === false\)[\s\S]*?state\.busy = false;[\s\S]*?draw\(\);/,
+    'non-refreshing action results do not leave busy state or redraw their return');
+  const rowsStart = configuration.indexOf('function instanceRows');
+  const rowsEnd = configuration.indexOf('function taskPrerequisite');
+  assert.ok(rowsStart >= 0 && rowsEnd > rowsStart, 'instance rows source range is absent');
+  const instanceRowsSource = configuration.slice(rowsStart, rowsEnd);
+  const dangerAt = instanceRowsSource.indexOf("E('div', { class: 'ml-actions ml-actions--danger' }, [");
+  assert.ok(dangerAt >= 0, 'task danger action group is absent');
+  assert.equal((instanceRowsSource.slice(0, dangerAt).match(/E\('div', \{ class: 'ml-actions' \}, \[/g) ?? []).length, 2,
+    'task actions are not wrapped in a single row-level action container');
+  const stylesheet = read(path.join(viewDirectory, 'multi-login.css'));
+  assert.match(stylesheet, /\.ml-table \.ml-actions \{\s*align-items: flex-start;\s*min-width: 0;\s*\}/,
+    'task action container can overflow or lose flexible shrink behavior');
+  pass('instance actions preserve and render structured script status/outcome/exit results');
+}
+
+function instanceEditorTests() {
+  const configuration = read(path.join(viewDirectory, 'configuration.js'));
+  const editor = /function instanceEditor\([\s\S]*?\n        \}/.exec(configuration)?.[0] ?? '';
+  assert.ok(editor, 'instance editor is absent');
+  assert.match(editor, /var interfaceChoices = interfaces\.map/, 'IPv4/IPv6 selectors do not share the loaded interface set');
+  assert.match(editor, /choicesWithCurrent\(current\)[\s\S]*!interfaces\.includes\(current\)[\s\S]*当前配置，暂不可用/, 'temporarily missing saved interfaces are not preserved');
+  assert.match(editor, /select\(iface, _\('IPv4 接口'\), choices\(choicesWithCurrent\(instance\.interface\), instance\.interface\)\)/, 'IPv4 interface is not a preserving selector');
+  assert.match(editor, /select\(v6, _\('IPv6 接口（可选）'\), choices\(choicesWithCurrent\(instance\.v6face\), instance\.v6face, _\('不使用 IPv6 接口'\)\)\)/, 'IPv6 interface is not an optional preserving selector');
+  assert.doesNotMatch(editor, /input\(v6,/, 'IPv6 interface regressed to a free-text field');
+  assert.match(configuration, /\.ml-modal|ml-modal/, 'instance editor lacks the shared modal layout class');
+  pass('instance editor uses aligned IPv4/IPv6 interface selectors');
+}
+
+function settingsSaveOrderTests() {
+  const configuration = read(path.join(viewDirectory, 'configuration.js'));
+  const runStart = configuration.indexOf('function run(');
+  const runEnd = configuration.indexOf('\n        }', runStart);
+  assert.ok(runStart >= 0 && runEnd > runStart, 'configuration run helper is absent');
+  const run = configuration.slice(runStart, runEnd);
+  const requestAt = run.indexOf('L.resolveDefault(request(), failed())');
+  assert.ok(requestAt >= 0, 'configuration run helper never starts the request');
+  assert.doesNotMatch(run.slice(0, requestAt), /draw\(\)/, 'run() redraws before capturing request/DOM state');
+  assert.ok(run.indexOf('draw();', requestAt) > requestAt, 'run() has no busy-state draw after the request starts');
+  pass('settings save captures checkbox/field values before the busy-state redraw');
 }
 
 function uciSectionEnumerationTests() {
@@ -545,5 +617,8 @@ luciRpcEnvelopeTests();
 luciNullChildTests();
 jshnNounsetCompatibilityTests();
 rpcdSessionMetadataTests();
+instanceActionFeedbackTests();
+instanceEditorTests();
+settingsSaveOrderTests();
 uciSectionEnumerationTests();
 process.stdout.write(`${checks} Phase 7 static/pure checks passed.\n`);

@@ -49,23 +49,72 @@ instance_status_text() {
 	fi
 }
 
+record_manual_action() {
+	local action="$1"
+	local outcome="$2"
+	local code="$3"
+	local diagnostic
+
+	[ "${INSTANCE_CHILD_STARTED:-0}" = 1 ] || return 0
+	case $action in status | login | logout) ;; *) return 1 ;; esac
+	case $code in '' | *[!0-9]*) return 1 ;; esac
+	case $outcome in
+	online | offline | login_success | already_online | auth_rejected | classification_mismatch | already_offline | logout_success | logout_timeout | transport_error | protocol_error | argument_error | dependency_error | interface_error | encoding_error | internal_error) ;;
+	*) return 1 ;;
+	esac
+	diagnostic="source=manual action=$action outcome=$outcome exit=$code"
+
+	# Tests record only through their logger stub; production additionally keeps
+	# the same root-only fixed log consumed by the Diagnostics page.
+	if [ "${MULTILOGIN_TEST_MODE:-0}" != 1 ] && [ -d /var/log ] && [ ! -L /var/log/multilogin.log ]; then
+		if [ ! -e /var/log/multilogin.log ]; then
+			(umask 077 && : >/var/log/multilogin.log) 2>/dev/null || :
+		fi
+		if [ -f /var/log/multilogin.log ] && [ ! -L /var/log/multilogin.log ]; then
+			if chmod 0600 /var/log/multilogin.log >/dev/null 2>&1; then
+				printf '%s\n' "$diagnostic" >>/var/log/multilogin.log 2>/dev/null || :
+			fi
+		fi
+	fi
+	if command -v logger >/dev/null 2>&1; then
+		logger -t multilogin-action "$diagnostic" >/dev/null 2>&1 || :
+	fi
+}
+
 valid_rpc_section() {
 	case ${1:-} in '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;; esac
 	[ "${#1}" -le 64 ]
 }
 
 parse_action_section() {
-	local raw trimmed keys value_type
+	local raw trimmed keys key business_keys value_type session_type rpc_session
 	raw=$(cat) || return 1
 	trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || return 1
 	case $trimmed in \{*\}) ;; *) return 1 ;; esac
+	# Native json_load may swallow parser failures for malformed brace-delimited
+	# input on supported JSHN versions; validate the parser status first.
+	jshn -r "$trimmed" >/dev/null 2>&1 || return 1
 	json_init
 	json_load "$trimmed" || return 1
-	json_get_keys keys
-	[ "$keys" = section ] || return 1
+	json_get_keys keys '' || return 1
+	business_keys=''
+	for key in $keys; do
+		case $key in
+		ubus_rpc_session)
+			# rpcd injects this trusted transport field into LuCI calls. It is
+			# type-checked and excluded from the exact business schema.
+			json_get_type session_type ubus_rpc_session || return 1
+			[ "$session_type" = string ] || return 1
+			json_get_var rpc_session ubus_rpc_session '' || return 1
+			[ -n "$rpc_session" ] || return 1
+			;;
+		*) business_keys="$business_keys${business_keys:+ }$key" ;;
+		esac
+	done
+	[ "$business_keys" = section ] || return 1
 	json_get_type value_type section || return 1
 	[ "$value_type" = string ] || return 1
-	json_get_var SECTION section
+	json_get_var SECTION section '' || return 1
 	valid_rpc_section "$SECTION"
 }
 
@@ -331,7 +380,10 @@ validate_portal_result() {
 	portal_action=$(jsonfilter -e '@.action' <"$result_file" 2>/dev/null) || return 1
 	portal_ok=$(jsonfilter -e '@.ok' <"$result_file" 2>/dev/null) || return 1
 	portal_outcome=$(jsonfilter -e '@.outcome' <"$result_file" 2>/dev/null) || return 1
-	portal_error_kind=$(jsonfilter -e '@.error_kind' <"$result_file" 2>/dev/null) || return 1
+	# OpenWrt jsonfilter returns status 1 with no output for a JSON null.  The
+	# key-presence check above distinguishes the required null from a missing
+	# field; normalize null to the empty value used by success validation.
+	portal_error_kind=$(jsonfilter -e '@.error_kind' <"$result_file" 2>/dev/null) || portal_error_kind=''
 	portal_api=$(jsonfilter -e '@.api' <"$result_file" 2>/dev/null) || return 1
 	portal_version=$(jsonfilter -e '@.version' <"$result_file" 2>/dev/null) || return 1
 	portal_data=$(jsonfilter -e '@.data' <"$result_file" 2>/dev/null) || return 1
@@ -359,6 +411,7 @@ run_portal_action() {
 
 	INSTANCE_CODE=3
 	INSTANCE_OUTCOME=internal_error
+	INSTANCE_CHILD_STARTED=0
 
 	case "$action" in
 	check) child_action=status ;;
@@ -382,6 +435,7 @@ run_portal_action() {
 
 	case "$action" in
 	check)
+		INSTANCE_CHILD_STARTED=1
 		if [ -n "$INSTANCE_V6FACE" ]; then
 			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --v6face "$INSTANCE_V6FACE" >"$result_file" 2>/dev/null
 		else
@@ -390,6 +444,7 @@ run_portal_action() {
 		INSTANCE_CODE=$?
 		;;
 	test)
+		INSTANCE_CHILD_STARTED=1
 		if [ -n "$INSTANCE_V6FACE" ]; then
 			printf '%s\n' "$INSTANCE_PASSWORD" | {
 				"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --v6face "$INSTANCE_V6FACE" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
@@ -405,6 +460,7 @@ run_portal_action() {
 		INSTANCE_CODE=$(cat "$status_file" 2>/dev/null) || INSTANCE_CODE=''
 		;;
 	logout)
+		INSTANCE_CHILD_STARTED=1
 		if [ -n "$INSTANCE_V6FACE" ]; then
 			"$PORTAL_SCRIPT" "$child_action" --mwan3 "$INSTANCE_INTERFACE" --account "$INSTANCE_USERNAME" --v6face "$INSTANCE_V6FACE" --ua-type "$INSTANCE_UA_TYPE" >"$result_file" 2>/dev/null
 		else
@@ -421,6 +477,7 @@ run_portal_action() {
 		INSTANCE_CODE=3
 		INSTANCE_OUTCOME=internal_error
 	fi
+	record_manual_action "$child_action" "$INSTANCE_OUTCOME" "$INSTANCE_CODE" || :
 	cleanup_action_temp
 	return 0
 }
@@ -430,14 +487,14 @@ trap on_action_signal HUP INT TERM
 
 case "$1" in
 list)
-	printf '{"get_overview":{},"get_settings":{},"save_settings":{"enabled":"","log_level":"","retry_interval":0,"check_interval":0,"max_retry_delay":0,"already_logged_delay":0},"list_accounts":{},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""},"list_instances":{},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"service_status":{},"service_action":{"action":""},"get_diagnostics":{},"get_logs":{},"clear_logs":{},"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"network_recover":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"script_info":{},"script_check":{},"script_stage":{"expected_generation":0},"script_validate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_execute":false},"script_activate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_activate":false,"allow_downgrade":false},"script_rollback":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_restore":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_get_draft":{},"script_save_draft":{"content":"","base_sha256":"","expected_generation":0},"script_discard_draft":{"expected_sha256":"","expected_generation":0}}\n'
+	printf '{"get_overview":{},"get_settings":{},"save_settings":{"enabled":"","log_level":"","retry_interval":0,"check_interval":0,"max_retry_delay":0,"already_logged_delay":0},"list_accounts":{},"save_account":{"section":"","alias":"","username":"","password":""},"delete_account":{"section":""},"list_instances":{},"save_instance":{"section":"","enabled":"","alias":"","interface":"","v6face":"","account":"","ua_type":""},"delete_instance":{"section":""},"service_status":{},"service_action":{"action":""},"get_diagnostics":{},"get_logs":{},"clear_logs":{},"quick_setup":{"base_iface":"","count":0},"list_auto":{},"remove_auto":{},"network_recover":{},"check_instance":{"section":""},"test_instance":{"section":""},"logout_instance":{"section":""},"script_info":{},"script_check":{},"script_stage":{"expected_generation":0},"script_validate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_execute":false},"script_activate":{"source":"","expected_sha256":"","expected_generation":0,"confirm_activate":false,"allow_downgrade":false},"script_rollback":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_restore":{"expected_sha256":"","expected_generation":0,"confirm_activate":false},"script_get_draft":{},"script_create_draft":{"expected_sha256":"","expected_generation":0},"script_save_draft":{"content":"","base_sha256":"","expected_generation":0},"script_discard_draft":{"expected_sha256":"","expected_generation":0}}\n'
 	;;
 call)
 	case "$2" in
 	get_overview | get_settings | save_settings | list_accounts | save_account | delete_account | list_instances | save_instance | delete_instance | service_status | service_action | get_diagnostics | get_logs | clear_logs | quick_setup | list_auto | remove_auto | network_recover)
 		exec /usr/libexec/multilogin-config rpc "$2"
 		;;
-	script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_save_draft | script_discard_draft)
+	script_info | script_check | script_stage | script_validate | script_activate | script_rollback | script_restore | script_get_draft | script_create_draft | script_save_draft | script_discard_draft)
 		exec /usr/libexec/multilogin-script rpc "$2"
 		;;
 	check_instance)
