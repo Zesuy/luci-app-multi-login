@@ -9,7 +9,7 @@ This handout is the compact restart context for future Codex tasks in this works
 - Repository: `luci-app-multi-login`
 - Current branch: `codex/fix-release-checksum`
 - Latest accepted product baseline: `a35fca7 Converge r19 dashboard and managed script UI`; r23 is the current branch candidate and remains blocked from RC acceptance.
-- Target product: MultiLogin v3, `v3.0.0-rc.1`
+- Target product: MultiLogin v3, `v3.0.0-rc.4`
 - Current package revision: `r23`
 - Execution plan: `dev/plan/multilogin-v3.md`
 - Phase status: Phase 9 remains blocked pending explicit real-device/portal authorization.
@@ -76,7 +76,7 @@ SHA-256 `31bcc87e8d3080362cd868b6bb23b32c04e82b09196f4f8a4f49d05f5ffc60e0`.
 The packaged factory portal script is byte-identical to source. r20 checksums
 are retained only as historical evidence and must not be installed.
 
-Package revision r23 is the current disposable-QEMU candidate:
+Package revision r23 was last exercised in disposable QEMU as the pre-tag-alignment
 `luci-app-multilogin_3.0.0-rc.1-r23_all.ipk`, SHA-256
 `6d8847cab2167dd25a2268718946fd83666b1418c5cec4d21c0a671621b36113`. A fresh
 OpenWrt 24.10.8 QEMU installed it; the Playwright save check sent `enabled:"1"`,
@@ -85,8 +85,9 @@ kept the checkbox checked, and `uci get multilogin.global.enabled` returned
 `evidence.json`/`sha256sums.txt` are under
 `/tmp/multilogin-savecheck.WgQyQP/evidence/`. The earlier r22 layout
 screenshots remain under `/tmp/multilogin-qemu.11xkqp/evidence/`. Release
-artifact inspection remains blocked by the preserved workspace `cqu-portal.sh`
-version `3.0.0-rc.4` versus package/tag `3.0.0-rc.1`.
+artifact inspection for that historical package was blocked by `cqu-portal.sh`
+version `3.0.0-rc.4` versus package/tag `3.0.0-rc.1`; the current source/tag
+candidate is now aligned to `3.0.0-rc.4` and requires a fresh artifact.
 
 The r10 bounded local runner passed 16 checks; four optional tools were unavailable locally. QEMU reproduced account rejection on r10, then instance rollback on r11 and r12; Sol's independent review returned `BLOCK` on the first validator defect and identified the subsequent fail-open/substring defects. The r19 source passes executable Phase 7 `16/16`, Phase 6 `8/8`, full runner `16` with four optional tooling skips, controller `19/19`, portal `9/9`, version matrix, and read-only IPK inspection. The rebuilt 24.10.8 IPK is `luci-app-multilogin_3.0.0-rc.1-r19_all.ipk`, SHA-256 `eff0fdf02ccb13b70387798c149100235f5f7fa0c0467be41305f69ab8fa0281`. It was force-reinstalled in disposable QEMU; r19 screenshots and evidence are in `/tmp/multilogin-qemu-r10/screenshots/`, including desktop/mobile dashboard/script views, the clear `r19-service-enable-confirm-390.png` confirmation capture, all five service actions, cancellation with zero `service_action`, and cancellation of managed update with zero update RPCs. QEMU readback keeps `account_1` / `offline-ui-check`, auto-login disabled, no login task, and no Portal request; the script page has no literal null child or previous-version rollback wording. Independent Sol r19 review returned `PASS`; no P0/P1 remains. Remaining P2s are limited to the discarded old full-page confirmation capture and a global bootstrap ACL warning outside the tested routes.
 

@@ -2,9 +2,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
 # Keep the release/tag SemVer separate from APK's Alpine version spelling.
-# IPK accepts 3.0.0-rc.1; APK v3 requires the equivalent 3.0.0_rc1.
-PKG_SOURCE_VERSION:=3.0.0-rc.1
-PKG_APK_VERSION:=3.0.0_rc1
+# IPK accepts 3.0.0-rc.4; APK v3 requires the equivalent 3.0.0_rc4.
+PKG_SOURCE_VERSION:=3.0.0-rc.4
+PKG_APK_VERSION:=3.0.0_rc4
 ifeq ($(CONFIG_USE_APK),y)
 PKG_VERSION:=$(PKG_APK_VERSION)
 else

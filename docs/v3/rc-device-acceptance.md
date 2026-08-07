@@ -15,8 +15,8 @@
 
 | 输入 | 固定身份 | 当前离线证据 |
 | --- | --- | --- |
-| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.1-r23_all.ipk` | CI artifact checksum required before device acceptance |
-| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc1-r23.apk` | CI artifact checksum required before device acceptance |
+| v3 / OpenWrt 24.10 | `luci-app-multilogin_3.0.0-rc.4-r23_all.ipk` | CI artifact checksum required before device acceptance |
+| v3 / OpenWrt 25.12 | `luci-app-multilogin-3.0.0_rc4-r23.apk` | CI artifact checksum required before device acceptance |
 | 支持的 v2 降级包 | `luci-app-multilogin_2.2.0-4_all.ipk`，源码提交 `fb272e8285c65415dea8a9a359a4204b94be06a0` | 使用官方 23.05.6 x86_64 SDK 离线重建；SHA-256 `bd3de0f4dfbd13a9bd84ab8f63f9875dcd99c232ad23a53d9009dba5dc2f4f1e` |
 
 这些哈希描述本次本地构建，不替代发布签名。项目当前没有已冻结的签名密钥或签名格式；若产品要求密码学签名，必须先由产品所有者做出决定，不能临时生成并宣称为既有信任根。
@@ -144,8 +144,8 @@ pgrep -af '/etc/multilogin/login_control.bash'
 | ID | 场景 | 关键验收 |
 | --- | --- | --- |
 | `PKG-01` | 23.05 全新安装 | 服务被 enable 但不强制 start；`global.enabled=0`；没有占位账号/实例；安装文件、conffile 和模式与 IPK 一致。 |
-| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.1-r23` 控制版本。 |
-| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc1-r23`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
+| `PKG-02` | 24.10 全新安装 | 与 `PKG-01` 相同，并确认 `3.0.0-rc.4-r23` 控制版本。 |
+| `PKG-02A` | 25.12 APK 全新安装 | 使用真实 apk-tools 和真实设备；与 `PKG-01` 相同，确认 `3.0.0_rc4-r23`、`noarch`、依赖、conffile、lifecycle hooks 与卸载清理。未通过时不得发布 APK。 |
 | `PKG-03` | v2 stock 升级，disabled/stopped | UCI 与时间字段保留；服务仍 disabled/stopped；stock 脚本进入 Managed。 |
 | `PKG-04` | v2 stock 升级，enabled/stopped | enabled 与 running 独立保留；不得隐式启动。 |
 | `PKG-05` | v2 stock 升级，enabled/running | 只在先前 running 时恢复运行；无重复 daemon。 |
@@ -305,4 +305,4 @@ dual-stack 变体只允许增加已核对的 `--v6face <IFACE>`。操作员在�
 - 没有产品所有者对发布签名方案、真实 redirect 负例方法和主观 UI 结果的决定；
 - 没有 push、tag、workflow dispatch、draft/stable Release 授权。
 
-因此 Phase 9 只能保持准备/阻塞状态，不能将任何真实集成单元标记为 PASS，也不能发布 `v3.0.0-rc.1` 或 `v3.0.0`。
+因此 Phase 9 只能保持准备/阻塞状态，不能将任何真实集成单元标记为 PASS，也不能发布 `v3.0.0-rc.4` 或 `v3.0.0`。

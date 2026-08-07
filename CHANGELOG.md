@@ -5,12 +5,12 @@ All notable changes to MultiLogin are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and release entries use the SemVer source version. OpenWrt package archives
 append their independent `PKG_RELEASE` build revision; for this candidate the
-24.10 SDK emits `3.0.0-rc.1-r23` and the APK-based 25.12 SDK emits
-`3.0.0_rc1-r23`. The APK spelling is a
+24.10 SDK emits `3.0.0-rc.4-r23` and the APK-based 25.12 SDK emits
+`3.0.0_rc4-r23`. The APK spelling is a
 deterministic package-manager projection; the source, tag, script, and
-changelog version remains `3.0.0-rc.1`.
+changelog version remains `3.0.0-rc.4`.
 
-## [3.0.0-rc.1] - 2026-08-04
+## [3.0.0-rc.4] - 2026-08-07
 
 ### Fixed
 

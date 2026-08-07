@@ -8,7 +8,7 @@ Execution-plan baseline: `e772078`
 
 Current package: `luci-app-multilogin 2.2.0-4`
 
-Target package: `v3.0.0`, first candidate `v3.0.0-rc.1`
+Target package: `v3.0.0`, current candidate `v3.0.0-rc.4`
 
 This document records the compatibility and security boundary for v3. Later phases may refine private implementation details, but changing a public decision below requires an explicit decision-log entry, updated tests, and independent review.
 
@@ -120,7 +120,7 @@ The script contains literal, non-evaluated assignment lines:
 
 ```text
 MULTILOGIN_SCRIPT_API=3
-MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.1'
+MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.4'
 ```
 
 The backend parses only anchored literal assignments and never sources a candidate. Versions follow SemVer (prerelease allowed); API compatibility requires the integer `3`. `version` returns the same values in the standard output envelope. `self-test` performs syntax-independent internal parsing/encoding checks without resolving an interface, reading credentials, or making a network request.
@@ -130,7 +130,7 @@ The backend parses only anchored literal assignments and never sources a candida
 Each action writes exactly one compact JSON object to stdout:
 
 ```json
-{"ok":true,"action":"status","outcome":"online","error_kind":null,"api":3,"version":"3.0.0-rc.1","data":{}}
+{"ok":true,"action":"status","outcome":"online","error_kind":null,"api":3,"version":"3.0.0-rc.4","data":{}}
 ```
 
 Required keys are `ok`, `action`, `outcome`, `error_kind`, `api`, `version`, and object `data`. `ok` means the action produced a trustworthy result, not that the session is online: status `offline` is `ok=true/error_kind=null/exit 1`, and login `already_online` is `ok=true/error_kind=null/exit 2`. A rejected login is `ok=false/error_kind=auth/exit 1`. Logout follows the later evidence-precedence table, so an early rejection becomes success, timeout, or indeterminate rather than a standalone exit-1 outcome. Other failures use one of `transport`, `protocol`, `classification`, `timeout`, `arguments`, `dependency`, `interface`, `encoding`, or `internal`. `data` is allowlisted and may contain `phone_flag`, expected UA type, poll count, or non-sensitive validation metadata. It never contains password, full request URL/query, curl config, raw portal body, username, or account reference.

@@ -168,10 +168,13 @@ function sdkMatrixTests() {
 function metadataTests() {
   const changelogSource = read('CHANGELOG.md');
   const deviceAcceptanceSource = read('docs/v3/rc-device-acceptance.md');
-  assert.match(changelogSource, new RegExp(`3\\.0\\.0-rc\\.1-r${packageRelease}`), 'CHANGELOG candidate revision is stale');
-  assert.match(deviceAcceptanceSource, new RegExp(`3\\.0\\.0-rc\\.1-r${packageRelease}`), 'device acceptance IPK revision is stale');
-  assert.match(deviceAcceptanceSource, new RegExp(`3\\.0\\.0_rc1-r${packageRelease}`), 'device acceptance APK revision is stale');
-  const staleCandidate = new RegExp(`3\\.0\\.0-rc\\.1-r(?!${packageRelease}(?:\\D|$))\\d+|3\\.0\\.0_rc1-r(?!${packageRelease}(?:\\D|$))\\d+`);
+  const regexEscape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sourceVersion = regexEscape(packageSourceVersion);
+  const apkVersion = regexEscape(packageApkVersion);
+  assert.match(changelogSource, new RegExp(`${sourceVersion}-r${packageRelease}`), 'CHANGELOG candidate revision is stale');
+  assert.match(deviceAcceptanceSource, new RegExp(`${sourceVersion}-r${packageRelease}`), 'device acceptance IPK revision is stale');
+  assert.match(deviceAcceptanceSource, new RegExp(`${apkVersion}-r${packageRelease}`), 'device acceptance APK revision is stale');
+  const staleCandidate = new RegExp(`${sourceVersion}-r(?!${packageRelease}(?:\\D|$))\\d+|${apkVersion}-r(?!${packageRelease}(?:\\D|$))\\d+`);
   assert.doesNotMatch(deviceAcceptanceSource, staleCandidate, 'device acceptance still names an obsolete candidate');
   const releaseRepository = path.join(temporary, 'release-repository');
   write('release-repository/Makefile', 'PKG_SOURCE_VERSION:=3.0.0-rc.1\nPKG_APK_VERSION:=3.0.0_rc1\nPKG_RELEASE:=1\n');
@@ -200,12 +203,12 @@ function metadataTests() {
   fs.writeFileSync(path.join(badApkProjection, 'Makefile'), 'PKG_SOURCE_VERSION:=3.0.0-rc.1\nPKG_APK_VERSION:=3.0.0-rc.1\nPKG_RELEASE:=1\n');
   assert.notEqual(run('node', ['tools/release/version-matrix.mjs', '--repository', badApkProjection, '--tag', 'v3.0.0-rc.1']).status, 0);
   const notes = path.join(temporary, 'release-notes.md');
-  const generated = run('node', ['tools/release/release-notes.mjs', '--version', '3.0.0-rc.1', '--output', notes]);
+  const generated = run('node', ['tools/release/release-notes.mjs', '--version', packageSourceVersion, '--output', notes]);
   assert.equal(generated.status, 0, generated.stderr);
   assert.match(fs.readFileSync(notes, 'utf8'), /### Added[\s\S]+### Security/);
   assert.equal(fs.statSync(notes).mode & 0o777, 0o600);
   const taggedNotes = path.join(temporary, 'release-notes-tagged.md');
-  const generatedFromTag = run('node', ['tools/release/release-notes.mjs', '--version', 'v3.0.0-rc.1', '--output', taggedNotes]);
+  const generatedFromTag = run('node', ['tools/release/release-notes.mjs', '--version', `v${packageSourceVersion}`, '--output', taggedNotes]);
   assert.equal(generatedFromTag.status, 0, generatedFromTag.stderr);
   assert.equal(fs.readFileSync(taggedNotes, 'utf8'), fs.readFileSync(notes, 'utf8'));
   pass('tag, source/APK versions, script metadata, changelog, artifact names and notes agree');
@@ -414,7 +417,7 @@ function artifactInspectionTests() {
   assert.doesNotMatch(inspector, /chroot|procd|uci\s|service\s|\/etc\/init\.d\/[^'" ]+\s+(?:start|stop|restart)/, 'artifact inspector simulates installation/runtime');
   assert.match(inspector, /multilogin\/script\.js/);
   const { ipk, sums } = createArtifactFixture();
-  const inspectArgs = (fixture, style = 'plain') => ['tools/release/inspect-artifact.sh', '--ipk', fixture.ipk, '--checksums', fixture.sums, '--tag', 'v3.0.0-rc.1', '--release-style', style];
+  const inspectArgs = (fixture, style = 'plain') => ['tools/release/inspect-artifact.sh', '--ipk', fixture.ipk, '--checksums', fixture.sums, '--tag', `v${packageSourceVersion}`, '--release-style', style];
   const accepted = run('sh', inspectArgs({ ipk, sums }), { timeout: 8000 });
   assert.equal(accepted.status, 0, `${accepted.stdout}\n${accepted.stderr}`);
   assert.match(accepted.stdout, /artifact inspection passed/);
@@ -426,9 +429,9 @@ function artifactInspectionTests() {
   assert.equal(acceptedReleaseR.status, 0, `${acceptedReleaseR.stdout}\n${acceptedReleaseR.stderr}`);
   assert.notEqual(run('sh', inspectArgs(releaseRFixture, 'plain')).status, 0);
   const badSums = write('bad-sha256sums.txt', `${'0'.repeat(64)}  ${path.basename(ipk)}\n`);
-  assert.notEqual(run('sh', ['tools/release/inspect-artifact.sh', '--ipk', ipk, '--checksums', badSums, '--tag', 'v3.0.0-rc.1', '--release-style', 'plain']).status, 0);
+  assert.notEqual(run('sh', ['tools/release/inspect-artifact.sh', '--ipk', ipk, '--checksums', badSums, '--tag', `v${packageSourceVersion}`, '--release-style', 'plain']).status, 0);
   const wrongName = path.join(temporary, 'wrong.ipk'); fs.copyFileSync(ipk, wrongName);
-  assert.notEqual(run('sh', ['tools/release/inspect-artifact.sh', '--ipk', wrongName, '--checksums', sums, '--tag', 'v3.0.0-rc.1', '--release-style', 'plain']).status, 0);
+  assert.notEqual(run('sh', ['tools/release/inspect-artifact.sh', '--ipk', wrongName, '--checksums', sums, '--tag', `v${packageSourceVersion}`, '--release-style', 'plain']).status, 0);
   for (const fixture of [
     createArtifactFixture('bad-control', { depends: 'libc, bash, curl, mwan3, jsonfilter' }),
     createArtifactFixture('extra-dependency', { depends: 'libc, bash, curl, mwan3, jsonfilter, luci-base, busybox' }),
@@ -450,7 +453,7 @@ function apkArtifactInspectionTests() {
   assert.doesNotMatch(inspector, /"\$APK_TOOL"\s+(?:add|del|fix|upgrade)|chroot|qemu/i, 'APK inspector installs or emulates package behavior');
   const inspectArgs = (fixture, style = 'r') => [
     'tools/release/inspect-artifact.sh', '--apk', fixture.apk, '--apk-tool', fixture.fakeTool,
-    '--checksums', fixture.sums, '--tag', 'v3.0.0-rc.1', '--release-style', style,
+    '--checksums', fixture.sums, '--tag', `v${packageSourceVersion}`, '--release-style', style,
   ];
   const valid = createApkArtifactFixture();
   const accepted = run('sh', inspectArgs(valid), { timeout: 8000 });
