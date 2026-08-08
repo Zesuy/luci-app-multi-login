@@ -64,43 +64,6 @@ jobs:
         run: timeout 60s ./tests/run.sh
 
   sdk-build:
-    name: SDK ${{ matrix.sdk_version }} x86_64
+    name: Release SDK matrix
     needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - sdk_version: 23.05.6
-            sdk_url: https://downloads.openwrt.org/releases/23.05.6/targets/x86/64/openwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: f22bdac5b702bb823a0ee802e9bbda2a56c0f7a2687e5090113b00910dac995f
-            sdk_archive_extension: .tar.xz
-            feed_branch: openwrt-23.05
-            artifact_name: luci-app-multilogin-openwrt-23.05.6-x86-64
-            package_format: ipk
-            release_style: plain
-          - sdk_version: 24.10.8
-            sdk_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: ac4a0405d2eea821b06f93c14ba13ffa90ad0457648903df7dde02570027ab21
-            sdk_archive_extension: .tar.zst
-            feed_branch: openwrt-24.10
-            artifact_name: luci-app-multilogin-openwrt-24.10.8-x86-64
-            package_format: ipk
-            release_style: r
-          - sdk_version: 25.12.5
-            sdk_url: https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
-            sdk_archive_extension: .tar.zst
-            feed_branch: openwrt-25.12
-            artifact_name: luci-app-multilogin-openwrt-25.12.5-x86-64
-            package_format: apk
-            release_style: r
     uses: ./.github/workflows/sdk-build.yml
-    with:
-      sdk_version: ${{ matrix.sdk_version }}
-      sdk_url: ${{ matrix.sdk_url }}
-      sdk_sha256: ${{ matrix.sdk_sha256 }}
-      sdk_archive_extension: ${{ matrix.sdk_archive_extension }}
-      feed_branch: ${{ matrix.feed_branch }}
-      artifact_name: ${{ matrix.artifact_name }}
-      package_format: ${{ matrix.package_format }}
-      release_style: ${{ matrix.release_style }}

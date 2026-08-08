@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -75,6 +77,12 @@ jobs:
 
       - name: Run offline tests
         run: timeout 60s ./tests/run.sh
+
+  sdk-build:
+    name: Release SDK matrix
+    needs: [scope, test]
+    if: needs.scope.outputs.scope == 'package'
+    uses: ./.github/workflows/sdk-build.yml
 
   shell-only:
     name: Shell-only version gate

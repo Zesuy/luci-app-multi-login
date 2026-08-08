@@ -1,15 +1,15 @@
-#!/bin/sh
+#!/bin/bash
 
 MULTILOGIN_SCRIPT_API=3
-MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.1'
+MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.4'
 
 PORTAL_BASE='https://login.cqu.edu.cn:802'
 STATUS_JS_VERSION='4.X'
 ACTION_JS_VERSION='4.2.2'
 PORTAL_LANG='zh'
 ZERO_MAC='000000000000'
-PC_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-MOBILE_UA='Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36'
+PC_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+MOBILE_UA='Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36'
 
 ACTION='unknown'
 INTERFACE=''
@@ -36,6 +36,7 @@ REQUEST_CACHE=''
 STATUS_PHONE_FLAG=''
 STATUS_ERROR_KIND=''
 STATUS_POLLS=0
+FAILURE_DETAIL='internal_unspecified'
 
 LC_ALL=C
 export LC_ALL
@@ -108,6 +109,20 @@ fail_exit() {
 	diagnose "$FAIL_OUTCOME"
 	emit_json false "$ACTION" "$FAIL_OUTCOME" "$FAIL_KIND" "$FAIL_DATA"
 	exit "$FAIL_STATUS"
+}
+
+failure_data() {
+	case $FAILURE_DETAIL in '' | *[!a-z0-9_]*) FAILURE_DETAIL=internal_unspecified ;; esac
+	printf '{"detail_code":"%s"}' "$FAILURE_DETAIL"
+}
+
+fail_detail_exit() {
+	FAIL_DETAIL_STATUS=$1
+	FAIL_DETAIL_OUTCOME=$2
+	FAIL_DETAIL_KIND=$3
+	FAILURE_DETAIL=$4
+	FAIL_DETAIL_DATA=$(failure_data)
+	fail_exit "$FAIL_DETAIL_STATUS" "$FAIL_DETAIL_OUTCOME" "$FAIL_DETAIL_KIND" "$FAIL_DETAIL_DATA"
 }
 
 success_exit() {
@@ -187,7 +202,9 @@ validate_ipv6() {
 }
 
 normalize_mac() {
-	printf '%s' "$1" | tr -d ':-' | tr '[:lower:]' '[:upper:]'
+	NORMALIZED_MAC=${1//:/}
+	NORMALIZED_MAC=${NORMALIZED_MAC//-/}
+	printf '%s' "${NORMALIZED_MAC^^}"
 }
 
 validate_mac() {
@@ -321,12 +338,16 @@ validate_environment() {
 
 require_portal_dependencies() {
 	for REQUIRED_COMMAND in mwan3 curl jsonfilter ifstatus ip mktemp chmod rm awk sed tr; do
-		command_exists "$REQUIRED_COMMAND" || return 1
+		if ! command_exists "$REQUIRED_COMMAND"; then
+			FAILURE_DETAIL="dependency_missing_$REQUIRED_COMMAND"
+			return 1
+		fi
 	done
 	return 0
 }
 
 init_temp_dir() {
+	FAILURE_DETAIL=temp_workspace_unavailable
 	TEMP_BASE=${TMPDIR:-/tmp}
 	while [ "$TEMP_BASE" != / ] && [ "${TEMP_BASE%/}" != "$TEMP_BASE" ]; do
 		TEMP_BASE=${TEMP_BASE%/}
@@ -382,41 +403,21 @@ secure_temp_file() {
 }
 
 read_password() {
+	FAILURE_DETAIL=credential_input_invalid
 	PASSWORD=''
 	PASSWORD_EXTRA=''
-	for PASSWORD_COMMAND in dd od awk wc; do
-		command_exists "$PASSWORD_COMMAND" || return 2
-	done
-	secure_temp_file credential || return 2
-	PASSWORD_FILE=$SECURE_FILE
-	dd bs=1025 count=2 of="$PASSWORD_FILE" 2>/dev/null || {
-		rm -f "$PASSWORD_FILE" >/dev/null 2>&1 || :
-		return 2
-	}
-	PASSWORD_SIZE=$(wc -c <"$PASSWORD_FILE" 2>/dev/null) || PASSWORD_SIZE=''
-	case $PASSWORD_SIZE in
-	'' | *[!0-9]*)
-		rm -f "$PASSWORD_FILE" >/dev/null 2>&1 || :
-		return 2
-		;;
-	esac
-	if [ "$PASSWORD_SIZE" -gt 1025 ] || ! od -An -tu1 <"$PASSWORD_FILE" 2>/dev/null | awk '{ for (i=1; i<=NF; i++) if ($i == 0) exit 1 }'; then
-		rm -f "$PASSWORD_FILE" >/dev/null 2>&1 || :
+	# Internal callers provide one trusted UCI value followed by a newline.
+	# Keep the credential on stdin/in shell memory instead of adding dd/od/wc
+	# dependencies and a second temporary secret file on minimal OpenWrt builds.
+	IFS= read -r PASSWORD || {
+		PASSWORD=''
 		return 1
-	fi
-	PASSWORD_READ_STATUS=0
-	{
-		IFS= read -r PASSWORD || PASSWORD_READ_STATUS=1
-		if IFS= read -r PASSWORD_EXTRA || [ -n "$PASSWORD_EXTRA" ]; then
-			PASSWORD_READ_STATUS=1
-		fi
-	} <"$PASSWORD_FILE"
-	rm -f "$PASSWORD_FILE" >/dev/null 2>&1 || :
-	[ "$PASSWORD_READ_STATUS" -eq 0 ] || {
+	}
+	if IFS= read -r PASSWORD_EXTRA || [ -n "$PASSWORD_EXTRA" ]; then
 		PASSWORD=''
 		PASSWORD_EXTRA=''
 		return 1
-	}
+	fi
 	[ -n "$PASSWORD" ] || return 1
 	[ "${#PASSWORD}" -le 1024 ] || return 1
 	PASSWORD_EXTRA=''
@@ -436,16 +437,37 @@ base64_encode() {
 	if [ -z "$BASE64_INPUT" ]; then
 		return 0
 	fi
-	if command_exists base64; then
-		BASE64_OUTPUT=$(printf '%s' "$BASE64_INPUT" | base64 2>/dev/null) || return 1
-	elif command_exists busybox && busybox base64 --help >/dev/null 2>&1; then
-		BASE64_OUTPUT=$(printf '%s' "$BASE64_INPUT" | busybox base64 2>/dev/null) || return 1
-	elif command_exists openssl; then
-		BASE64_OUTPUT=$(printf '%s' "$BASE64_INPUT" | openssl base64 -A 2>/dev/null) || return 1
-	else
-		return 1
-	fi
-	BASE64_OUTPUT=$(printf '%s' "$BASE64_OUTPUT" | tr -d '\r\n')
+	# Only validated IPv4/IPv6 text reaches this function.  Encode that small,
+	# fixed alphabet with the awk already required by the script, rather than
+	# assuming a standalone base64 binary or an optional BusyBox applet.
+	BASE64_OUTPUT=$(awk -v input="$BASE64_INPUT" '
+		function byte(c, p) {
+			p = index("0123456789", c)
+			if (p) return 47 + p
+			p = index("ABCDEF", c)
+			if (p) return 64 + p
+			p = index("abcdef", c)
+			if (p) return 96 + p
+			if (c == ":") return 58
+			if (c == ".") return 46
+			return -1
+		}
+		BEGIN {
+			alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+			length_input = length(input)
+			for (i = 1; i <= length_input; i += 3) {
+				a = byte(substr(input, i, 1))
+				b = i + 1 <= length_input ? byte(substr(input, i + 1, 1)) : 0
+				c = i + 2 <= length_input ? byte(substr(input, i + 2, 1)) : 0
+				if (a < 0 || b < 0 || c < 0) exit 1
+				output = output substr(alphabet, int(a / 4) + 1, 1)
+				output = output substr(alphabet, ((a % 4) * 16) + int(b / 16) + 1, 1)
+				output = output (i + 1 <= length_input ? substr(alphabet, ((b % 16) * 4) + int(c / 64) + 1, 1) : "=")
+				output = output (i + 2 <= length_input ? substr(alphabet, (c % 64) + 1, 1) : "=")
+			}
+			printf "%s", output
+		}
+	') || return 1
 	[ -n "$BASE64_OUTPUT" ] || return 1
 	return 0
 }
@@ -475,13 +497,16 @@ resolve_named_device() {
 }
 
 resolve_context() {
+	FAILURE_DETAIL=interface_device_unresolved
 	resolve_named_device "$INTERFACE" || return 1
 	WLAN_DEVICE=$RESOLVED_DEVICE
 
+	FAILURE_DETAIL=interface_ipv4_missing
 	IPV4_OUTPUT=$(ip -4 addr show dev "$WLAN_DEVICE" 2>/dev/null) || IPV4_OUTPUT=''
 	WLAN_IPV4=$(printf '%s\n' "$IPV4_OUTPUT" | awk '{ for (i=1; i<=NF; i++) if ($i == "inet") { value=$(i+1); sub("/.*", "", value); print value; exit } }')
 	validate_ipv4 "$WLAN_IPV4" || return 1
 
+	FAILURE_DETAIL=interface_mac_missing
 	MAC_OUTPUT=$(ip link show dev "$WLAN_DEVICE" 2>/dev/null) || MAC_OUTPUT=''
 	MAC_VALUE=$(printf '%s\n' "$MAC_OUTPUT" | awk '{ for (i=1; i<=NF; i++) if ($i == "link/ether") { print $(i+1); exit } }')
 	if [ -z "$MAC_VALUE" ] && [ -r "/sys/class/net/$WLAN_DEVICE/address" ]; then
@@ -492,14 +517,18 @@ resolve_context() {
 
 	WLAN_IPV6=''
 	if [ -n "$V6FACE" ]; then
+		FAILURE_DETAIL=interface_ipv6_device_unresolved
 		resolve_named_device "$V6FACE" || return 1
+		FAILURE_DETAIL=interface_ipv6_missing
 		IPV6_OUTPUT=$(ip -6 addr show dev "$RESOLVED_DEVICE" scope global 2>/dev/null) || IPV6_OUTPUT=''
 		WLAN_IPV6=$(printf '%s\n' "$IPV6_OUTPUT" | awk '{ for (i=1; i<=NF; i++) if ($i == "inet6") { value=$(i+1); sub("/.*", "", value); if (value !~ /^fe80:/) { print value; exit } } }')
 		validate_ipv6 "$WLAN_IPV6" || return 1
 	fi
 
+	FAILURE_DETAIL=encoding_ipv4_failed
 	base64_encode "$WLAN_IPV4" || return 2
 	WLAN_IPV4_B64=$BASE64_OUTPUT
+	FAILURE_DETAIL=encoding_ipv6_failed
 	base64_encode "$WLAN_IPV6" || return 2
 	WLAN_IPV6_B64=$BASE64_OUTPUT
 	return 0
@@ -542,13 +571,16 @@ portal_request() {
 	shift 2
 	PORTAL_RESPONSE=''
 	PORTAL_ERROR_KIND=''
+	FAILURE_DETAIL=portal_request_failed
 
 	secure_temp_file curl || {
+		FAILURE_DETAIL=portal_config_temp_failed
 		PORTAL_ERROR_KIND=internal
 		return 1
 	}
 	CURL_CONFIG=$SECURE_FILE
 	secure_temp_file response || {
+		FAILURE_DETAIL=portal_response_temp_failed
 		rm -f "$CURL_CONFIG" >/dev/null 2>&1 || :
 		PORTAL_ERROR_KIND=internal
 		return 1
@@ -556,39 +588,53 @@ portal_request() {
 	CURL_RESPONSE=$SECURE_FILE
 
 	: >"$CURL_CONFIG" || {
+		FAILURE_DETAIL=portal_config_write_failed
 		PORTAL_ERROR_KIND=internal
 		return 1
 	}
 	printf '%s\n' get silent show-error fail >>"$CURL_CONFIG" || {
+		FAILURE_DETAIL=portal_config_write_failed
 		PORTAL_ERROR_KIND=internal
 		return 1
 	}
 	printf '%s\n' 'connect-timeout = 8' 'max-time = 15' 'max-filesize = 131072' >>"$CURL_CONFIG" || {
+		FAILURE_DETAIL=portal_config_write_failed
 		PORTAL_ERROR_KIND=internal
 		return 1
 	}
 	write_config_value url "$PORTAL_URL" || {
+		FAILURE_DETAIL=portal_config_encode_failed
+		PORTAL_ERROR_KIND=encoding
+		return 1
+	}
+	write_config_value output "$CURL_RESPONSE" || {
+		FAILURE_DETAIL=portal_output_encode_failed
 		PORTAL_ERROR_KIND=encoding
 		return 1
 	}
 	if [ -n "$PORTAL_UA" ]; then
 		write_config_value user-agent "$PORTAL_UA" || {
+			FAILURE_DETAIL=portal_user_agent_encode_failed
 			PORTAL_ERROR_KIND=encoding
 			return 1
 		}
 	fi
 	for PORTAL_PARAMETER; do
 		write_config_value data-urlencode "$PORTAL_PARAMETER" || {
+			FAILURE_DETAIL=portal_parameter_encode_failed
 			PORTAL_ERROR_KIND=encoding
 			return 1
 		}
 	done
 	chmod 0600 "$CURL_CONFIG" "$CURL_RESPONSE" 2>/dev/null || {
+		FAILURE_DETAIL=portal_temp_mode_failed
 		PORTAL_ERROR_KIND=internal
 		return 1
 	}
 
-	if mwan3 use "$INTERFACE" curl --config "$CURL_CONFIG" >"$CURL_RESPONSE" 2>/dev/null; then
+	# mwan3 writes its own "Running ..." diagnostic to stdout.  Let curl write
+	# the response file directly so wrapper output cannot corrupt the payload.
+	if mwan3 use "$INTERFACE" curl --config "$CURL_CONFIG" >/dev/null 2>/dev/null; then
 		PORTAL_CURL_STATUS=0
 	else
 		PORTAL_CURL_STATUS=$?
@@ -597,22 +643,30 @@ portal_request() {
 	CURL_CONFIG=''
 	if [ "$PORTAL_CURL_STATUS" -ne 0 ]; then
 		rm -f "$CURL_RESPONSE" >/dev/null 2>&1 || :
+		FAILURE_DETAIL=portal_curl_failed
 		PORTAL_ERROR_KIND=transport
 		return 1
 	fi
 	PORTAL_SIZE=$(wc -c <"$CURL_RESPONSE" 2>/dev/null) || PORTAL_SIZE=''
 	case $PORTAL_SIZE in
 	'' | *[!0-9]*)
+		FAILURE_DETAIL=portal_response_size_failed
 		PORTAL_ERROR_KIND=protocol
 		return 1
 		;;
 	esac
 	if [ "$PORTAL_SIZE" -eq 0 ] || [ "$PORTAL_SIZE" -gt 131072 ]; then
 		rm -f "$CURL_RESPONSE" >/dev/null 2>&1 || :
+		if [ "$PORTAL_SIZE" -eq 0 ]; then
+			FAILURE_DETAIL=portal_response_empty
+		else
+			FAILURE_DETAIL=portal_response_too_large
+		fi
 		PORTAL_ERROR_KIND=protocol
 		return 1
 	fi
 	PORTAL_RESPONSE=$(cat "$CURL_RESPONSE" 2>/dev/null) || {
+		FAILURE_DETAIL=portal_response_read_failed
 		PORTAL_ERROR_KIND=protocol
 		return 1
 	}
@@ -664,10 +718,14 @@ record_field() {
 
 select_status_record() {
 	SELECT_JSON=$1
+	FAILURE_DETAIL=status_list_parse_failed
 	secure_temp_file records || return 1
 	SELECT_RECORDS=$SECURE_FILE
 	printf '%s' "$SELECT_JSON" | jsonfilter -e '@.list[*]' >"$SELECT_RECORDS" 2>/dev/null || return 1
-	[ -s "$SELECT_RECORDS" ] || return 1
+	if [ ! -s "$SELECT_RECORDS" ]; then
+		FAILURE_DETAIL=status_list_empty
+		return 1
+	fi
 	secure_temp_file macselected || return 1
 	SELECT_MAC_FILE=$SECURE_FILE
 	secure_temp_file selected || return 1
@@ -678,28 +736,37 @@ select_status_record() {
 	while IFS= read -r SELECT_RECORD || [ -n "$SELECT_RECORD" ]; do
 		[ -n "$SELECT_RECORD" ] || continue
 		SELECT_COUNT=$((SELECT_COUNT + 1))
-		[ "$SELECT_COUNT" -le 64 ] || return 1
-		if record_field "$SELECT_RECORD" '@.wlan_user_mac' '@.user_mac' '@.mac'; then
+		if [ "$SELECT_COUNT" -gt 64 ]; then
+			FAILURE_DETAIL=status_list_too_large
+			return 1
+		fi
+		if record_field "$SELECT_RECORD" '@.online_mac' '@.wlan_user_mac' '@.user_mac' '@.mac'; then
 			SELECT_MAC_SEEN=1
 		fi
 	done <"$SELECT_RECORDS"
-	[ "$SELECT_COUNT" -gt 0 ] || return 1
+	if [ "$SELECT_COUNT" -le 0 ]; then
+		FAILURE_DETAIL=status_list_empty
+		return 1
+	fi
 
 	while IFS= read -r SELECT_RECORD || [ -n "$SELECT_RECORD" ]; do
 		[ -n "$SELECT_RECORD" ] || continue
 		if [ "$SELECT_MAC_SEEN" -eq 1 ]; then
-			record_field "$SELECT_RECORD" '@.wlan_user_mac' '@.user_mac' '@.mac' || continue
+			record_field "$SELECT_RECORD" '@.online_mac' '@.wlan_user_mac' '@.user_mac' '@.mac' || continue
 			SELECT_RECORD_MAC=$(normalize_mac "$RECORD_FIELD_VALUE")
 			[ "$SELECT_RECORD_MAC" = "$WLAN_MAC" ] || continue
 		fi
 		printf '%s\n' "$SELECT_RECORD" >>"$SELECT_MAC_FILE" || return 1
 	done <"$SELECT_RECORDS"
-	[ -s "$SELECT_MAC_FILE" ] || return 1
+	if [ ! -s "$SELECT_MAC_FILE" ]; then
+		FAILURE_DETAIL=status_mac_no_match
+		return 1
+	fi
 
 	SELECT_IP_SEEN=0
 	while IFS= read -r SELECT_RECORD || [ -n "$SELECT_RECORD" ]; do
 		[ -n "$SELECT_RECORD" ] || continue
-		if record_field "$SELECT_RECORD" '@.wlan_user_ip' '@.user_ip' '@.ip'; then
+		if record_field "$SELECT_RECORD" '@.online_ip' '@.wlan_user_ip' '@.user_ip' '@.ip'; then
 			SELECT_IP_SEEN=1
 		fi
 	done <"$SELECT_MAC_FILE"
@@ -708,14 +775,22 @@ select_status_record() {
 	while IFS= read -r SELECT_RECORD || [ -n "$SELECT_RECORD" ]; do
 		[ -n "$SELECT_RECORD" ] || continue
 		if [ "$SELECT_IP_SEEN" -eq 1 ]; then
-			record_field "$SELECT_RECORD" '@.wlan_user_ip' '@.user_ip' '@.ip' || continue
+			record_field "$SELECT_RECORD" '@.online_ip' '@.wlan_user_ip' '@.user_ip' '@.ip' || continue
 			[ "$RECORD_FIELD_VALUE" = "$WLAN_IPV4" ] || continue
 		fi
 		printf '%s\n' "$SELECT_RECORD" >>"$SELECT_FINAL_FILE" || return 1
 		SELECT_FINAL_COUNT=$((SELECT_FINAL_COUNT + 1))
 	done <"$SELECT_MAC_FILE"
-	[ "$SELECT_FINAL_COUNT" -eq 1 ] || return 1
+	if [ "$SELECT_FINAL_COUNT" -eq 0 ]; then
+		FAILURE_DETAIL=status_ip_no_match
+		return 1
+	fi
+	if [ "$SELECT_FINAL_COUNT" -ne 1 ]; then
+		FAILURE_DETAIL=status_record_ambiguous
+		return 1
+	fi
 	IFS= read -r SELECTED_STATUS_RECORD <"$SELECT_FINAL_FILE" || return 1
+	FAILURE_DETAIL=status_phone_flag_invalid
 	record_field "$SELECTED_STATUS_RECORD" '@.phone_flag' || return 1
 	case $RECORD_FIELD_VALUE in
 	0 | 1) STATUS_PHONE_FLAG=$RECORD_FIELD_VALUE ;;
@@ -732,6 +807,7 @@ status_core() {
 		return 3
 	}
 	STATUS_JSON=$(strip_jsonp "$PORTAL_RESPONSE" "$REQUEST_CALLBACK") || {
+		FAILURE_DETAIL=status_jsonp_invalid
 		STATUS_ERROR_KIND=protocol
 		return 3
 	}
@@ -748,6 +824,7 @@ status_core() {
 		return 0
 		;;
 	*)
+		FAILURE_DETAIL=status_result_invalid
 		STATUS_ERROR_KIND=protocol
 		return 3
 		;;
@@ -790,7 +867,7 @@ request_login() {
 		"user_password=$PASSWORD" \
 		"wlan_user_ip=$WLAN_IPV4" \
 		"wlan_user_ipv6=$WLAN_IPV6" \
-		"wlan_user_mac=$WLAN_MAC" \
+		"wlan_user_mac=$ZERO_MAC" \
 		'wlan_ac_ip=' \
 		'wlan_ac_name=' \
 		"term_ua=$CURRENT_UA" \
@@ -933,6 +1010,10 @@ poll_logout_status() {
 self_test() {
 	SELF_TEST_JSON=$(strip_jsonp 'fixtureCallback({"result":1});' fixtureCallback) || return 1
 	[ "$SELF_TEST_JSON" = '{"result":1}' ] || return 1
+	base64_encode '1.1.1.1' || return 1
+	[ "$BASE64_OUTPUT" = 'MS4xLjEuMQ==' ] || return 1
+	base64_encode '10.0.0.1' || return 1
+	[ "$BASE64_OUTPUT" = 'MTAuMC4wLjE=' ] || return 1
 	base64_encode '192.0.2.1' || return 1
 	[ "$BASE64_OUTPUT" = 'MTkyLjAuMi4x' ] || return 1
 	SELF_TEST_ESCAPED=$(config_escape 'a"b\c') || return 1
@@ -948,7 +1029,10 @@ run_status() {
 		RUN_STATUS=$?
 		case $RUN_STATUS in
 		1) success_exit 1 offline '{}' ;;
-		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" '{}' ;;
+		*)
+			FAILURE_DATA=$(failure_data)
+			fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "$FAILURE_DATA"
+			;;
 		esac
 	fi
 }
@@ -959,23 +1043,24 @@ run_login() {
 		if [ "$STATUS_PHONE_FLAG" = "$EXPECTED_PHONE_FLAG" ]; then
 			success_exit 2 already_online "{\"phone_flag\":$STATUS_PHONE_FLAG,\"expected_ua_type\":\"$UA_TYPE\"}"
 		fi
-		fail_exit 8 classification_mismatch classification "{\"phone_flag\":$STATUS_PHONE_FLAG,\"expected_ua_type\":\"$UA_TYPE\"}"
+		fail_exit 8 classification_mismatch classification "{\"detail_code\":\"login_precheck_ua_mismatch\",\"phone_flag\":$STATUS_PHONE_FLAG,\"expected_ua_type\":\"$UA_TYPE\"}"
 	else
 		LOGIN_PRECHECK_STATUS=$?
 		if [ "$LOGIN_PRECHECK_STATUS" -ne 1 ]; then
-			fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" '{}'
+			FAILURE_DATA=$(failure_data)
+			fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "$FAILURE_DATA"
 		fi
 	fi
 
 	if ! request_login; then
 		case $PORTAL_ERROR_KIND in
-		encoding) fail_exit 7 encoding_error encoding '{}' ;;
-		internal) fail_exit 3 protocol_error internal '{}' ;;
-		*) fail_exit 3 transport_error transport '{}' ;;
+		encoding) fail_detail_exit 7 encoding_error encoding login_request_encoding ;;
+		internal) fail_detail_exit 3 internal_error internal login_request_internal ;;
+		*) fail_detail_exit 3 transport_error transport login_request_transport ;;
 		esac
 	fi
 	if ! parse_simple_result; then
-		fail_exit 3 protocol_error protocol '{}'
+		fail_detail_exit 3 protocol_error protocol login_response_invalid
 	fi
 	LOGIN_RACE=0
 	if [ "$SIMPLE_RET_CODE" = 2 ]; then
@@ -983,7 +1068,7 @@ run_login() {
 	elif [ "$SIMPLE_RESULT" = 1 ]; then
 		LOGIN_RACE=0
 	else
-		fail_exit 1 auth_rejected auth '{}'
+		fail_detail_exit 1 auth_rejected auth login_response_rejected
 	fi
 
 	if poll_login_status; then
@@ -994,8 +1079,8 @@ run_login() {
 	else
 		LOGIN_POLL_STATUS=$?
 		case $LOGIN_POLL_STATUS in
-		8) fail_exit 8 classification_mismatch classification "{\"phone_flag\":$STATUS_PHONE_FLAG,\"expected_ua_type\":\"$UA_TYPE\",\"poll_count\":$STATUS_POLLS}" ;;
-		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "{\"poll_count\":$STATUS_POLLS}" ;;
+		8) fail_exit 8 classification_mismatch classification "{\"detail_code\":\"login_poll_ua_mismatch\",\"phone_flag\":$STATUS_PHONE_FLAG,\"expected_ua_type\":\"$UA_TYPE\",\"poll_count\":$STATUS_POLLS}" ;;
+		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "{\"detail_code\":\"login_poll_$STATUS_ERROR_KIND\",\"poll_count\":$STATUS_POLLS}" ;;
 		esac
 	fi
 }
@@ -1007,7 +1092,10 @@ run_logout() {
 		LOGOUT_PRECHECK_STATUS=$?
 		case $LOGOUT_PRECHECK_STATUS in
 		1) success_exit 0 already_offline '{}' ;;
-		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" '{}' ;;
+		*)
+			FAILURE_DATA=$(failure_data)
+			fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "$FAILURE_DATA"
+			;;
 		esac
 	fi
 
@@ -1025,18 +1113,18 @@ run_logout() {
 	else
 		LOGOUT_POLL_STATUS=$?
 		case $LOGOUT_POLL_STATUS in
-		9) fail_exit 9 logout_timeout timeout "{\"poll_count\":$STATUS_POLLS,\"unbind\":\"$UNBIND_STAGE\",\"check_logout\":\"$CHECK_LOGOUT_STAGE\"}" ;;
-		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "{\"poll_count\":$STATUS_POLLS,\"unbind\":\"$UNBIND_STAGE\",\"check_logout\":\"$CHECK_LOGOUT_STAGE\"}" ;;
+		9) fail_exit 9 logout_timeout timeout "{\"detail_code\":\"logout_poll_timeout\",\"poll_count\":$STATUS_POLLS,\"unbind\":\"$UNBIND_STAGE\",\"check_logout\":\"$CHECK_LOGOUT_STAGE\"}" ;;
+		*) fail_exit 3 "${STATUS_ERROR_KIND}_error" "$STATUS_ERROR_KIND" "{\"detail_code\":\"logout_poll_$STATUS_ERROR_KIND\",\"poll_count\":$STATUS_POLLS,\"unbind\":\"$UNBIND_STAGE\",\"check_logout\":\"$CHECK_LOGOUT_STAGE\"}" ;;
 		esac
 	fi
 }
 
 main() {
 	if ! parse_arguments "$@"; then
-		fail_exit 4 argument_error arguments '{}'
+		fail_detail_exit 4 argument_error arguments arguments_invalid
 	fi
 	if ! validate_environment; then
-		fail_exit 4 argument_error arguments '{}'
+		fail_detail_exit 4 argument_error arguments environment_invalid
 	fi
 
 	case $ACTION in
@@ -1045,31 +1133,39 @@ main() {
 		if self_test; then
 			success_exit 0 self_test_pass '{}'
 		fi
-		fail_exit 5 dependency_error dependency '{}'
+		fail_detail_exit 5 dependency_error dependency self_test_failed
 		;;
 	esac
 
 	if ! require_portal_dependencies; then
-		fail_exit 5 dependency_error dependency '{}'
+		FAILURE_DATA=$(failure_data)
+		fail_exit 5 dependency_error dependency "$FAILURE_DATA"
 	fi
 	if ! init_temp_dir; then
-		fail_exit 5 dependency_error dependency '{}'
+		FAILURE_DATA=$(failure_data)
+		fail_exit 5 dependency_error dependency "$FAILURE_DATA"
 	fi
 	if [ "$ACTION" = login ]; then
 		read_password
 		PASSWORD_STATUS=$?
 		case $PASSWORD_STATUS in
 		0) ;;
-		1) fail_exit 4 argument_error arguments '{}' ;;
-		*) fail_exit 5 dependency_error dependency '{}' ;;
+		1) fail_detail_exit 4 argument_error arguments credential_input_invalid ;;
+		*) fail_detail_exit 5 dependency_error dependency credential_input_read_failed ;;
 		esac
 	fi
 	resolve_context
 	RESOLVE_STATUS=$?
 	case $RESOLVE_STATUS in
 	0) ;;
-	1) fail_exit 6 interface_error interface '{}' ;;
-	*) fail_exit 7 encoding_error encoding '{}' ;;
+	1)
+		FAILURE_DATA=$(failure_data)
+		fail_exit 6 interface_error interface "$FAILURE_DATA"
+		;;
+	*)
+		FAILURE_DATA=$(failure_data)
+		fail_exit 7 encoding_error encoding "$FAILURE_DATA"
+		;;
 	esac
 
 	case $ACTION in
@@ -1077,7 +1173,7 @@ main() {
 	login) run_login ;;
 	logout) run_logout ;;
 	esac
-	fail_exit 3 internal_error internal '{}'
+	fail_detail_exit 3 internal_error internal dispatch_unreachable
 }
 
 main "$@"

@@ -55,7 +55,9 @@ if (!requireObject(menu, menuPath)) {
       fail(`${menuPath}: route outside MultiLogin namespace: ${route}`);
     if (!requireObject(entry, `${menuPath}:${route}`))
       continue;
-    if (typeof entry.title !== 'string' || entry.title.length === 0)
+    const compatibilityAlias = route.startsWith('admin/services/multilogin/') &&
+      entry.hidden === true && entry.action?.type === 'alias';
+    if (!compatibilityAlias && (typeof entry.title !== 'string' || entry.title.length === 0))
       fail(`${menuPath}:${route} has no title`);
     if (!requireObject(entry.action, `${menuPath}:${route}.action`))
       continue;

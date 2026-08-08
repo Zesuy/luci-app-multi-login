@@ -221,6 +221,7 @@ ml_policy_request_fields() {
 	actual=${2:-}
 	case $method in
 	script_info | script_check | script_get_draft) expected='' ;;
+	script_create_draft) expected='expected_generation expected_sha256' ;;
 	script_stage) expected='expected_generation' ;;
 	script_validate) expected='confirm_execute expected_generation expected_sha256 source' ;;
 	script_activate) expected='allow_downgrade confirm_activate expected_generation expected_sha256 source' ;;
@@ -250,7 +251,7 @@ ml_policy_transition() {
 		return
 	} ;; esac
 	case $operation in
-	stage | save_draft)
+	stage | save_draft | create_draft)
 		if ! _ml_policy_hash "$target_hash"; then
 			printf '%s\n' invalid_request
 			return
@@ -272,6 +273,9 @@ ml_policy_transition() {
 	case $operation in
 	stage)
 		if [ -n "$current_hash" ] && [ "$current_hash" = "$target_hash" ]; then printf '%s\n' no_change; else printf '%s\n' ok; fi
+		;;
+	create_draft)
+		if [ "$status" = none ] && [ -z "$current_hash" ]; then printf '%s\n' ok; else printf '%s\n' invalid_state; fi
 		;;
 	validate)
 		case $status in

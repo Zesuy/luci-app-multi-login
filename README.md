@@ -55,11 +55,17 @@ flowchart TD
 make package/luci-app-multilogin/compile V=s
 ```
 
-OpenWrt 23.05/24.10 生成 IPK，25.12 生成 APK，制品均位于 SDK 的
-`bin/packages/` 树中。普通 CI 只运行代码、静态与纯逻辑检查；手动触发的
-Release validation workflow 会额外编译并只读检查两种 IPK 和一种 APK。
+CI 以 OpenWrt 24.10 的 IPK 和 25.12 的 APK 作为两个包格式边界见证，
+制品均位于 SDK 的 `bin/packages/` 树中。普通 CI 始终运行代码、静态与
+纯逻辑检查；仅 `package` 范围变更额外编译这两个 SDK，shell-only 与文档
+变更不编译包。手动 Release validation workflow 会重新编译并只读检查
+同一个 IPK 和 APK 矩阵。
 安装、升级、网络变更、门户认证、脚本执行和设备重启均应遵循发布/运维流程；
 它们不属于主机侧自动化测试，也不使用 QEMU 代替真实设备验收。
+
+需要复现真实包安装后的 rpcd/LuCI 行为并生成桌面、移动端截图时，统一遵循
+[OpenWrt QEMU、LuCI 与截图复用流程](docs/v3/qemu-luci-smoke-workflow.md)。该流程
+只产生可丢弃 QEMU smoke 证据，不能替代 Phase 9 真实设备验收。
 
 ## 支持与诊断
 

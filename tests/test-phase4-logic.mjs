@@ -59,6 +59,7 @@ function packageTextTests() {
   assert.match(makefile, /define Package\/luci-app-multilogin\/conffiles\n\/etc\/config\/multilogin\nendef/);
   assert.match(makefile, /\$\(INSTALL_CONF\) \.\/etc\/config\/multilogin \$\(1\)\/etc\/config\//);
   assert.match(makefile, /\$\(INSTALL_BIN\) \.\/etc\/multilogin\/cqu-portal\.sh \$\(1\)\/usr\/lib\/multilogin\/cqu-portal\.factory\.sh/);
+  assert.match(makefile, /\$\(INSTALL_DATA\) \.\/package\/multilogin-fs\.sh \$\(1\)\/usr\/lib\/multilogin\/fs-metadata\.sh/);
   assert.doesNotMatch(makefile, /cqu-portal\.sh \$\(1\)\/etc\/multilogin/);
   for (const name of ['login_control.bash', 'login.sh', 'check_status.sh', 'logout.sh', 'quick_setup.sh'])
     assert.match(makefile, new RegExp(`\\$\\(INSTALL_BIN\\) \\.\\/etc\\/multilogin\\/${name.replace('.', '\\.')} \\$\\(1\\)\\/etc\\/multilogin\\/`));
@@ -66,6 +67,8 @@ function packageTextTests() {
 
   for (const hook of ['preinst', 'postinst', 'prerm', 'postrm']) {
     const block = makefile.match(new RegExp(`define Package/luci-app-multilogin/${hook}([\\s\\S]*?)endef`))?.[1] ?? '';
+    assert.match(block, /ML_FS_EMBEDDED=1/);
+    assert.ok(block.includes('$(file <$(CURDIR)/package/multilogin-fs.sh)'), `${hook} does not embed stat-less metadata logic`);
     assert.match(block, /ML_MIGRATION_EMBEDDED=1/);
     assert.ok(block.includes('$(file <$(CURDIR)/package/multilogin-migrate.sh)'), `${hook} does not embed migration logic`);
     assert.ok(block.includes(`$(file <$(CURDIR)/package/hooks/${hook}.sh)`), `${hook} does not embed its dispatcher`);
@@ -110,6 +113,30 @@ function pinnedHashTests() {
   assert.match(migration, /source=fb272e8285c65415dea8a9a359a4204b94be06a0/);
   assert.equal(expectedHashes['login.sh'], expectedHashes['login_huxi.sh']);
   pass('pinned v2 hashes and stock/downgrade decision predicates');
+}
+
+function modeFallbackTests() {
+  const directory = fs.mkdtempSync(path.join(temporaryRoot, 'mode-fallback.'));
+  const tools = path.join(directory, 'tools');
+  fs.mkdirSync(tools);
+  for (const name of ['awk', 'ls', 'wc']) {
+    const resolved = run('/bin/sh', ['-c', `command -v ${name}`]);
+    assert.equal(resolved.status, 0, `${name} is unavailable for the mode fallback test`);
+    fs.symlinkSync(resolved.stdout.trim(), path.join(tools, name));
+  }
+  const mode600 = path.join(directory, 'mode-600');
+  const mode755 = path.join(directory, 'mode-755');
+  write(mode600, 'private\n', 0o600);
+  write(mode755, 'executable\n', 0o755);
+  const probe = path.join(directory, 'probe.sh');
+  write(probe, `#!/bin/sh
+. '${path.join(repository, 'package/multilogin-fs.sh')}'
+printf '%s\\n' "$(ml_fs_mode '${mode600}')" "$(ml_fs_mode '${mode755}')" "$(ml_fs_size '${mode600}')"
+`, 0o700);
+  const result = run('/bin/sh', [probe], { env: { PATH: tools } });
+  assert.equal(result.status, 0, `mode fallback failed without stat: ${result.stderr}`);
+  assert.equal(result.stdout, '600\n755\n8\n', `unexpected fallback output; stderr: ${result.stderr}`);
+  pass('metadata reader falls back safely when neither stat command nor BusyBox stat applet exists');
 }
 
 function wrapperHarness(name) {
@@ -164,6 +191,7 @@ function wrapperTests() {
 }
 
 function syntaxCompileTests() {
+  const metadata = read(path.join(repository, 'package/multilogin-fs.sh'));
   const migration = read(path.join(repository, 'package/multilogin-migrate.sh'));
   const useBusyBox = run('/bin/sh', ['-c', 'command -v busybox >/dev/null 2>&1']).status === 0;
   const compile = (label, source) => {
@@ -173,7 +201,7 @@ function syntaxCompileTests() {
   };
   for (const hook of ['preinst', 'postinst', 'prerm', 'postrm']) {
     const dispatcher = read(path.join(repository, 'package/hooks', `${hook}.sh`));
-    const expanded = `#!/bin/sh\nML_MIGRATION_EMBEDDED=1\n${migration}\n${dispatcher}\n`;
+    const expanded = `#!/bin/sh\nML_FS_EMBEDDED=1\n${metadata}\nML_MIGRATION_EMBEDDED=1\n${migration}\n${dispatcher}\n`;
     assert.equal(expanded.includes('$$(file'), false, `${hook} expansion retained a Make expression`);
     compile(`expanded-${hook}`, expanded);
   }
@@ -183,9 +211,33 @@ function syntaxCompileTests() {
   pass(`embedded hook and finalizer syntax${useBusyBox ? ' under sh and BusyBox ash' : ' under sh'}`);
 }
 
+function rpcdRefreshLifecycleTests() {
+  const migration = read(path.join(repository, 'package/multilogin-migrate.sh'));
+  const refresh = migration.match(/ml_refresh_rpcd\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(refresh, /ml_live_root \|\| return 0/, 'rpcd refresh can run in an install root');
+  assert.match(refresh, /\[ -x \/etc\/init\.d\/rpcd \] \|\| return 0/, 'rpcd refresh does not tolerate a missing init script');
+  assert.match(refresh, /\/etc\/init\.d\/rpcd restart >\/dev\/null 2>&1 \|\| return 1/, 'rpcd refresh is not an explicit restart attempt');
+  const luciRefresh = migration.match(/ml_refresh_luci\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(luciRefresh, /ml_live_root \|\| return 0/, 'LuCI cache refresh can run in an install root');
+  assert.match(luciRefresh, /\/tmp\/luci-indexcache\.\*/, 'LuCI cache refresh does not target only its index cache');
+  assert.match(luciRefresh, /if \[ ! -f "\$ML_LUCI_CACHE" \] \|\| \[ -L "\$ML_LUCI_CACHE" \]/, 'LuCI cache refresh does not reject unsafe cache paths');
+  const postinst = migration.match(/ml_postinst\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const restoredAt = postinst.indexOf('ml_restore_service || return 1');
+  const stateAt = postinst.indexOf('ml_set_state complete || return 1');
+  const refreshAt = postinst.indexOf('ml_refresh_rpcd || :');
+  const luciAt = postinst.indexOf('ml_refresh_luci || :');
+  assert.ok(restoredAt >= 0 && stateAt > restoredAt && refreshAt > stateAt && luciAt > refreshAt,
+    'postinst does not refresh rpcd and LuCI caches after service restoration and completion');
+  assert.match(postinst, /if \[ "\$ML_EXISTING" = complete \]; then[\s\S]*?ml_refresh_rpcd \|\| :[\s\S]*?ml_refresh_luci \|\| :/,
+    'a repeated postinst with completed migration cannot refresh rpcd and LuCI caches');
+  pass('postinst refreshes rpcd and LuCI menu caches on a live root without aborting or requiring a new migration generation');
+}
+
 packageTextTests();
 freshConfigTests();
 pinnedHashTests();
+modeFallbackTests();
 wrapperTests();
 syntaxCompileTests();
+rpcdRefreshLifecycleTests();
 process.stdout.write(`${checks} Phase 4 static/pure checks passed.\n`);

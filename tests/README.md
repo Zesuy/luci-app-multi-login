@@ -39,9 +39,19 @@ rpcd, UCI, services, network commands, browsers, or a router filesystem.
 
 Phase 8 adds pinned-workflow and release-metadata checks, a pure change-scope
 matrix, and a shell-only gate that requires a newer SemVer without changing
-script API 3. Ordinary CI does not compile packages; the separate manual release
-validation workflow compiles 23.05/24.10 IPKs and a 25.12 APK after the same
-code gate passes. Read-only prepared IPK/APK fixtures enforce exact dependency
+script API 3. Package-scope ordinary CI compiles the canonical 24.10 IPK and
+25.12 APK matrix after the code gate passes; shell-only and documentation scopes
+skip SDK builds. Manual release validation reruns the same matrix. Read-only
+prepared IPK/APK fixtures enforce exact dependency
 and payload manifests, file modes, release-line filenames, checksums, and APK
 lifecycle-script embedding, including negative extra-file/dependency cases.
 They are never installed or executed, and no QEMU/router behavior is emulated.
+
+The optional real-package QEMU/LuCI smoke and screenshot workflow is documented
+in `docs/v3/qemu-luci-smoke-workflow.md`. It is deliberately outside
+`tests/run.sh` and never counts as real-device or Portal acceptance.
+
+The package-scope SDK job also runs `tests/test-jshn-contract.mjs` against the
+checked-out SDK's real `jshn.sh`/`jshn` and host BusyBox `ash`. This is a narrow
+library contract check (normal, missing, malformed, nested, repeated-init, and
+JSON-envelope paths), not an OpenWrt rootfs or service simulation.

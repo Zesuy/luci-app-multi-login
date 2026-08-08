@@ -17,7 +17,7 @@
           "delete_instance", "service_action", "clear_logs", "quick_setup",
           "remove_auto", "network_recover", "test_instance", "logout_instance",
           "script_stage", "script_validate", "script_activate", "script_rollback",
-          "script_restore", "script_save_draft", "script_discard_draft"
+          "script_restore", "script_create_draft", "script_save_draft", "script_discard_draft"
         ]
       }
     }

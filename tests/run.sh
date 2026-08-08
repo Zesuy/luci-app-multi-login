@@ -145,6 +145,18 @@ check_shfmt() {
 	pass 'shfmt for test/v3 shell files'
 }
 
+check_jshn_contract() {
+	if [ -z "${MULTILOGIN_JSHN_ROOT:-}" ]; then
+		if [ "${MULTILOGIN_REQUIRE_JSHN:-0}" = 1 ]; then
+			fail 'real SDK JSHN contract tooling is mandatory but MULTILOGIN_JSHN_ROOT is unset'
+		fi
+		skip 'real SDK JSHN contract tooling unavailable'
+		return
+	fi
+	node "$TEST_DIR/test-jshn-contract.mjs"
+	pass 'real SDK JSHN behavior contract'
+}
+
 check_javascript() {
 	find "$REPOSITORY/htdocs" "$TEST_DIR" -type f \( -name '*.js' -o -name '*.mjs' \) -print | LC_ALL=C sort |
 		while IFS= read -r FILE; do node --check "$FILE"; done
@@ -211,6 +223,7 @@ node "$TEST_DIR/test-phase4-logic.mjs"
 pass 'Phase 4 static and pure wrapper logic suite'
 node "$TEST_DIR/test-phase5-logic.mjs"
 pass 'Phase 5 static and pure policy logic suite'
+check_jshn_contract
 node "$TEST_DIR/test-phase6-static.mjs"
 pass 'Phase 6 static and extracted pure UI logic suite'
 node "$TEST_DIR/test-phase7-logic.mjs"

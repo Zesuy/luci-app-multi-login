@@ -2,15 +2,15 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-multilogin
 # Keep the release/tag SemVer separate from APK's Alpine version spelling.
-# IPK accepts 3.0.0-rc.1; APK v3 requires the equivalent 3.0.0_rc1.
-PKG_SOURCE_VERSION:=3.0.0-rc.1
-PKG_APK_VERSION:=3.0.0_rc1
+# IPK accepts 3.0.0-rc.4; APK v3 requires the equivalent 3.0.0_rc4.
+PKG_SOURCE_VERSION:=3.0.0-rc.4
+PKG_APK_VERSION:=3.0.0_rc4
 ifeq ($(CONFIG_USE_APK),y)
 PKG_VERSION:=$(PKG_APK_VERSION)
 else
 PKG_VERSION:=$(PKG_SOURCE_VERSION)
 endif
-PKG_RELEASE:=1
+PKG_RELEASE:=23
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -60,6 +60,7 @@ define Package/luci-app-multilogin/install
 	$(INSTALL_BIN) ./root/usr/libexec/multilogin-config $(1)/usr/libexec/
 	$(INSTALL_DATA) ./root/usr/lib/multilogin/script-policy.sh $(1)/usr/lib/multilogin/
 	$(INSTALL_DATA) ./root/usr/lib/multilogin/config-policy.sh $(1)/usr/lib/multilogin/
+	$(INSTALL_DATA) ./package/multilogin-fs.sh $(1)/usr/lib/multilogin/fs-metadata.sh
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/multilogin/* $(1)/www/luci-static/resources/view/multilogin/
 	$(INSTALL_CONF) ./etc/config/multilogin $(1)/etc/config/
 	$(INSTALL_BIN) ./etc/init.d/multilogin $(1)/etc/init.d/
@@ -73,6 +74,8 @@ endef
 
 define Package/luci-app-multilogin/preinst
 #!/bin/sh
+ML_FS_EMBEDDED=1
+$(file <$(CURDIR)/package/multilogin-fs.sh)
 ML_MIGRATION_EMBEDDED=1
 $(file <$(CURDIR)/package/multilogin-migrate.sh)
 $(file <$(CURDIR)/package/hooks/preinst.sh)
@@ -80,6 +83,8 @@ endef
 
 define Package/luci-app-multilogin/postinst
 #!/bin/sh
+ML_FS_EMBEDDED=1
+$(file <$(CURDIR)/package/multilogin-fs.sh)
 ML_MIGRATION_EMBEDDED=1
 $(file <$(CURDIR)/package/multilogin-migrate.sh)
 $(file <$(CURDIR)/package/hooks/postinst.sh)
@@ -87,6 +92,8 @@ endef
 
 define Package/luci-app-multilogin/prerm
 #!/bin/sh
+ML_FS_EMBEDDED=1
+$(file <$(CURDIR)/package/multilogin-fs.sh)
 ML_MIGRATION_EMBEDDED=1
 $(file <$(CURDIR)/package/multilogin-migrate.sh)
 $(file <$(CURDIR)/package/hooks/prerm.sh)
@@ -94,6 +101,8 @@ endef
 
 define Package/luci-app-multilogin/postrm
 #!/bin/sh
+ML_FS_EMBEDDED=1
+$(file <$(CURDIR)/package/multilogin-fs.sh)
 ML_MIGRATION_EMBEDDED=1
 $(file <$(CURDIR)/package/multilogin-migrate.sh)
 $(file <$(CURDIR)/package/hooks/postrm.sh)

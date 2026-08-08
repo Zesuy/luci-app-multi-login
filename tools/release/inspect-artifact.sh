@@ -73,6 +73,10 @@ REPOSITORY=$(
 )
 build_hook_core() {
 	hook_source=$1
+	compact_metadata_boundary=${2:-0}
+	printf 'ML_FS_EMBEDDED=1\n'
+	cat "$REPOSITORY/package/multilogin-fs.sh"
+	[ "$compact_metadata_boundary" = 1 ] || printf '\n'
 	printf 'ML_MIGRATION_EMBEDDED=1\n'
 	cat "$REPOSITORY/package/multilogin-migrate.sh"
 	cat "$hook_source"
@@ -81,13 +85,23 @@ build_hook_core() {
 verify_ipk_hook() {
 	body=$1
 	hook_source=$2
-	build_hook_core "$hook_source" >"$TEMP_ROOT/hook-core"
+	# OpenWrt's package generators differ only in whether one blank record at
+	# this embedded-file boundary survives. Both forms preserve the exact helper
+	# and migration bytes; no other hook prefix, suffix, or line may vary.
+	build_hook_core "$hook_source" 0 >"$TEMP_ROOT/hook-core"
 	{
 		printf '#!/bin/sh\n'
 		cat "$TEMP_ROOT/hook-core"
 	} >"$TEMP_ROOT/hook-expected"
+	build_hook_core "$hook_source" 1 >"$TEMP_ROOT/hook-core-compact"
+	{
+		printf '#!/bin/sh\n'
+		cat "$TEMP_ROOT/hook-core-compact"
+	} >"$TEMP_ROOT/hook-expected-compact"
 	grep -F "\$(file <" "$body" >/dev/null && fail 'lifecycle script contains an unexpanded Makefile file expression'
-	cmp -s "$TEMP_ROOT/hook-expected" "$body" || fail "IPK lifecycle hook does not exactly embed $(basename "$hook_source")"
+	cmp -s "$TEMP_ROOT/hook-expected" "$body" ||
+		cmp -s "$TEMP_ROOT/hook-expected-compact" "$body" ||
+		fail "IPK lifecycle hook does not exactly embed $(basename "$hook_source")"
 }
 
 verify_apk_hook() {
@@ -177,10 +191,10 @@ if [ -n "$APK" ]; then
 	for spec in \
 		'0600 etc/config/multilogin' '0755 etc/init.d/multilogin' \
 		'0755 etc/multilogin/login_control.bash' '0755 etc/multilogin/login.sh' '0755 etc/multilogin/check_status.sh' '0755 etc/multilogin/logout.sh' '0755 etc/multilogin/quick_setup.sh' \
-		'0755 usr/lib/multilogin/cqu-portal.factory.sh' '0644 usr/lib/multilogin/script-policy.sh' '0644 usr/lib/multilogin/config-policy.sh' \
+		'0755 usr/lib/multilogin/cqu-portal.factory.sh' '0644 usr/lib/multilogin/script-policy.sh' '0644 usr/lib/multilogin/config-policy.sh' '0644 usr/lib/multilogin/fs-metadata.sh' \
 		'0755 usr/libexec/rpcd/multilogin' '0755 usr/libexec/multilogin-script' '0755 usr/libexec/multilogin-config' \
 		'0644 usr/share/luci/menu.d/luci-app-multi-login.json' '0644 usr/share/rpcd/acl.d/luci-app-multi-login.json' \
-		'0644 www/luci-static/resources/view/multilogin/overview.js' '0644 www/luci-static/resources/view/multilogin/configuration.js' '0644 www/luci-static/resources/view/multilogin/network.js' '0644 www/luci-static/resources/view/multilogin/script.js' '0644 www/luci-static/resources/view/multilogin/diagnostics.js' \
+		'0644 www/luci-static/resources/view/multilogin/overview.js' '0644 www/luci-static/resources/view/multilogin/configuration.js' '0644 www/luci-static/resources/view/multilogin/network.js' '0644 www/luci-static/resources/view/multilogin/script.js' '0644 www/luci-static/resources/view/multilogin/diagnostics.js' '0644 www/luci-static/resources/view/multilogin/multi-login.css' \
 		'0644 lib/apk/packages/luci-app-multilogin.conffiles' '0644 lib/apk/packages/luci-app-multilogin.conffiles_static' '0644 lib/apk/packages/luci-app-multilogin.list'; do
 		mode=${spec%% *}
 		file=${spec#* }
@@ -312,6 +326,7 @@ require_payload 0755 etc/multilogin/quick_setup.sh
 require_payload 0755 usr/lib/multilogin/cqu-portal.factory.sh
 require_payload 0644 usr/lib/multilogin/script-policy.sh
 require_payload 0644 usr/lib/multilogin/config-policy.sh
+require_payload 0644 usr/lib/multilogin/fs-metadata.sh
 require_payload 0755 usr/libexec/rpcd/multilogin
 require_payload 0755 usr/libexec/multilogin-script
 require_payload 0755 usr/libexec/multilogin-config
@@ -322,6 +337,7 @@ require_payload 0644 www/luci-static/resources/view/multilogin/configuration.js
 require_payload 0644 www/luci-static/resources/view/multilogin/network.js
 require_payload 0644 www/luci-static/resources/view/multilogin/script.js
 require_payload 0644 www/luci-static/resources/view/multilogin/diagnostics.js
+require_payload 0644 www/luci-static/resources/view/multilogin/multi-login.css
 
 printf '%s\n' './' >>"$TEMP_ROOT/expected-data-list"
 LC_ALL=C sort -u "$TEMP_ROOT/expected-data-list" >"$TEMP_ROOT/expected-data-list.sorted"

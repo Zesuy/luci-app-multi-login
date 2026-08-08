@@ -8,7 +8,7 @@ Execution-plan baseline: `e772078`
 
 Current package: `luci-app-multilogin 2.2.0-4`
 
-Target package: `v3.0.0`, first candidate `v3.0.0-rc.1`
+Target package: `v3.0.0`, current candidate `v3.0.0-rc.4`
 
 This document records the compatibility and security boundary for v3. Later phases may refine private implementation details, but changing a public decision below requires an explicit decision-log entry, updated tests, and independent review.
 
@@ -65,7 +65,7 @@ Temporary action/curl files use an unpredictable `mktemp -d` directory under `${
 
 ## 3. UCI compatibility contract
 
-Existing section names, references, and fields remain valid. Phase 4 migration does not rename sections or rewrite credential values.
+Existing section names, references, and fields remain valid. Phase 4 migration does not rename sections or rewrite credential values. A later configuration edit may normalize a legacy anonymous `account` or `instance` section to a deterministic named section while preserving all fields and references in the same locked UCI transaction; existing named sections (including names beginning with `cfg`) are never renamed by this normalization.
 
 | Section type | Option | Values/default | v3 behavior |
 | --- | --- | --- | --- |
@@ -120,7 +120,7 @@ The script contains literal, non-evaluated assignment lines:
 
 ```text
 MULTILOGIN_SCRIPT_API=3
-MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.1'
+MULTILOGIN_SCRIPT_VERSION='3.0.0-rc.4'
 ```
 
 The backend parses only anchored literal assignments and never sources a candidate. Versions follow SemVer (prerelease allowed); API compatibility requires the integer `3`. `version` returns the same values in the standard output envelope. `self-test` performs syntax-independent internal parsing/encoding checks without resolving an interface, reading credentials, or making a network request.
@@ -130,7 +130,7 @@ The backend parses only anchored literal assignments and never sources a candida
 Each action writes exactly one compact JSON object to stdout:
 
 ```json
-{"ok":true,"action":"status","outcome":"online","error_kind":null,"api":3,"version":"3.0.0-rc.1","data":{}}
+{"ok":true,"action":"status","outcome":"online","error_kind":null,"api":3,"version":"3.0.0-rc.4","data":{}}
 ```
 
 Required keys are `ok`, `action`, `outcome`, `error_kind`, `api`, `version`, and object `data`. `ok` means the action produced a trustworthy result, not that the session is online: status `offline` is `ok=true/error_kind=null/exit 1`, and login `already_online` is `ok=true/error_kind=null/exit 2`. A rejected login is `ok=false/error_kind=auth/exit 1`. Logout follows the later evidence-precedence table, so an early rejection becomes success, timeout, or indeterminate rather than a standalone exit-1 outcome. Other failures use one of `transport`, `protocol`, `classification`, `timeout`, `arguments`, `dependency`, `interface`, `encoding`, or `internal`. `data` is allowlisted and may contain `phone_flag`, expected UA type, poll count, or non-sensitive validation metadata. It never contains password, full request URL/query, curl config, raw portal body, username, or account reference.
@@ -244,7 +244,7 @@ Exact method names are reserved now; detailed data schemas are frozen in the own
 
 - Configuration (Phase 7): `get_overview`, `get_settings`, `save_settings`, `list_accounts`, `list_instances`, `service_status`, `service_action`, `get_diagnostics`, `get_logs`, `clear_logs`.
 - Script backend (Phase 5): `script_info`, `script_check`, `script_stage`, `script_validate`, `script_activate`, `script_rollback`, `script_restore`.
-- Custom draft (Phase 5 backend support for the Phase 6 UI): `script_get_draft`, `script_save_draft`, `script_discard_draft`.
+- Custom script editing (Phase 5 backend support for the Phase 6 UI): `script_get_draft`, `script_create_draft`, `script_save_draft`, `script_discard_draft`.
 - Owned network recovery (Phase 7): `network_recover` in addition to preserved quick-setup methods.
 
 Script methods accept no URL or arbitrary path. `script_activate` identifies only the server-side `candidate` or validated `custom` source and requires its expected SHA-256/base generation. `service_action` allowlists `start`, `stop`, `restart`, `enable`, and `disable` for `multilogin` only.
@@ -263,6 +263,7 @@ All Phase 5 parameters are members of one JSON object and unknown fields are rej
 | `script_rollback` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode`, `active`, and `validation`. `expected_sha256` names the current LKG shown by `script_info`. |
 | `script_restore` | `expected_sha256`, `expected_generation`, `confirm_activate` | Keys `generation`, `mode` (`managed`), `active`, and `validation`. `expected_sha256` names the immutable factory shown by `script_info`. |
 | `script_get_draft` | none | Keys `generation`, `source="draft"`, `summary`, and `content`. A missing draft returns `not_found`. This is the only source-reading RPC; active and migration-preserved executable content is never returned to the browser. |
+| `script_create_draft` | `expected_sha256`, `expected_generation` | Copies the exact validated Managed active script into the isolated mode-0600 Custom draft and returns `generation` plus the `custom` summary. It rejects Custom/unknown active modes, an existing draft, and hash/generation conflicts. It never returns active content directly; the browser reads only the successfully isolated draft through `script_get_draft`. |
 | `script_save_draft` | `content`, `base_sha256`, `expected_generation` | Keys `generation` and `custom` (status `draft`, or unchanged `validated` for byte-identical `no_change`). Changed content invalidates earlier validation. Empty `base_sha256` is accepted only when no draft exists. |
 | `script_discard_draft` | `expected_sha256`, `expected_generation` | Keys `generation` and `custom`, which is the exact absent summary. It never removes `custom.preserved.sh`. |
 
@@ -325,7 +326,7 @@ Managed downgrade means only `script_activate` of a Raw candidate whose valid Se
 
 Custom content is non-empty valid UTF-8 text, contains no U+0000, and is at most 256 KiB encoded as UTF-8. Before `script_validate(source=custom)` may execute self-test, it repeats the same hash, regular non-symlink file, size/text, anchored API `3`, SemVer metadata, and `sh -n` checks used for a Raw candidate; any failure is `source_rejected` and no code executes. `custom.preserved.sh` is never modified, deleted, or returned by draft operations; migration recovery/import requires explicit out-of-band root access and a deliberate paste/save into the Custom draft.
 
-The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact caller-created draft because byte-preserving editing cannot be combined with content redaction. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned by an RPC.
+The Custom editor is a root-code editor, not secret storage. `script_get_draft` returns the exact isolated draft because byte-preserving editing cannot be combined with content redaction. A draft is either caller-created or explicitly copied server-side from a hash-matched Managed active script by `script_create_draft`; Custom/unknown active sources cannot be copied into browser-readable state. The UI and documentation must warn never to embed account credentials or other secrets in source; portal credentials continue to come only from server-side UCI and stdin. The absolute RPC password prohibition applies to MultiLogin-managed account credentials and action data, while this one explicit draft payload remains opaque administrator-authored code. Active, factory, LKG, candidate, Raw remote, and migration-preserved source are never returned directly by an RPC.
 
 #### 7.3.2 Phase 7 configuration, diagnostics, and ownership RPC schemas
 
@@ -357,7 +358,7 @@ Settings integer bounds are: `retry_interval` and `check_interval` 1–3600, `ma
 The fixed token and creation rules are:
 
 - An account or instance `section` supplied by a client is either the empty string or matches `[A-Za-z_][A-Za-z0-9_]{0,63}`. `@type[index]`, dots, slashes, whitespace, shell metacharacters, package prefixes, and all other forms are invalid. A non-empty ID must already exist in `multilogin` with exactly the expected `account` or `instance` type.
-- Empty `section` is accepted only by `save_account` and `save_instance`. It means create exactly one section of the corresponding type with `uci add multilogin account|instance`, validate the returned generated ID against the same grammar, and return that ID. Empty `section` is invalid for both delete methods and every action method. A failed validation or write leaves no newly committed section.
+- Empty `section` is accepted only by `save_account` and `save_instance`. It means allocate the first unused deterministic name (`account_N` or `instance_N`), create exactly one named section of the corresponding type, and return that stable ID. Legacy anonymous sections are read with UCI's generated-name listing and normalized before an edit or durable reference rewrite. Empty `section` is invalid for both delete methods and every action method. A failed validation or write leaves no newly committed section or transient normalization.
 - `interface`, optional non-empty `v6face`, and `base_iface` match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}` (1–15 ASCII bytes). Empty `v6face` means absent. Empty `interface` or `base_iface`, a leading punctuation character, and every value over 15 bytes are invalid.
 - Server-reserved ownership IDs have the exact spellings listed below and are not accepted as client-selected section IDs. Clients never supply a generated network/firewall/mwan3 object ID.
 

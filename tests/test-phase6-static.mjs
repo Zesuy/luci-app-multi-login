@@ -20,11 +20,12 @@ const rpcSchemas = Object.freeze({
   script_rollback: ['expected_sha256', 'expected_generation', 'confirm_activate'],
   script_restore: ['expected_sha256', 'expected_generation', 'confirm_activate'],
   script_get_draft: [],
+  script_create_draft: ['expected_sha256', 'expected_generation'],
   script_save_draft: ['content', 'base_sha256', 'expected_generation'],
   script_discard_draft: ['expected_sha256', 'expected_generation'],
 });
 const readMethods = ['script_check', 'script_get_draft', 'script_info'];
-const writeMethods = ['script_activate', 'script_discard_draft', 'script_restore', 'script_rollback', 'script_save_draft', 'script_stage', 'script_validate'];
+const writeMethods = ['script_activate', 'script_create_draft', 'script_discard_draft', 'script_restore', 'script_rollback', 'script_save_draft', 'script_stage', 'script_validate'];
 let checks = 0;
 
 function pass(label) {
@@ -118,7 +119,8 @@ function conflictAndBusyTests() {
   assert.match(runner, /state\.busy\s*=\s*false/, 'action does not leave busy state');
   assert.match(runner, /preserveConflictDraft[\s\S]*?refresh\(\{\s*preserveTypedDraft:\s*true\s*\}\)/, 'failure refresh does not explicitly preserve typed text and its base');
   assert.match(refresh, /if\s*\(!preserveTypedDraft\s*\|\|\s*updateDraftBase\)[\s\S]*?state\.draftBaseHash\s*=/, 'refresh can silently advance the base while preserving typed text');
-  assert.match(source, /state\.busy\s*\|\|\s*!state\.info\.ok|disabled\s*=\s*state\.busy/, 'busy state does not disable actions');
+  assert.match(source, /function operationDisabled\([\s\S]*pending\(key\)/, 'busy state does not disable actions');
+  assert.match(source, /disabled['"]?:\s*disabledAttr\(/, 'busy state does not use semantic disabled attributes');
   assert.match(source, /callScriptSaveDraft[\s\S]{0,300}updateDraftBase:\s*true/, 'successful save cannot adopt the returned draft base');
   pass('pure conflict preservation, success-only base adoption, and duplicate-action blocking');
 }
@@ -140,23 +142,19 @@ function savedDraftSafetyTests() {
   const runner = functionSource('runAction');
   assert.match(runner, /state\.conflict\s*=\s*state\.conflict\s*\|\|\s*failure\.conflict/, 'unrelated failures clear a sticky conflict');
 
-  for (const callPattern of [
-    /callScriptValidate\('custom'/g,
-    /callScriptActivate\('custom'/g,
-  ]) {
-    const call = [...source.matchAll(callPattern)][0];
-    assert.ok(call, `Custom safety call is absent: ${callPattern}`);
-    assert.match(source.slice(Math.max(0, call.index - 500), call.index), /requireCustomDraftSaved\(\)/, 'Custom validate/activate bypasses saved-text equality');
-  }
-  for (const callPattern of [
-    /callScriptValidate\('custom'/g,
-    /callScriptActivate\('custom'/g,
-    /callScriptDiscardDraft\(/g,
-  ]) {
-    const call = [...source.matchAll(callPattern)][0];
-    assert.ok(call, `Custom conflict-gated call is absent: ${callPattern}`);
-    assert.match(source.slice(call.index, call.index + 500), /state\.conflict/, 'conflict does not disable Custom validate/activate/discard');
-  }
+  const apply = functionSource('runCustomApply');
+  assert.match(apply, /requireCustomMutationAllowed\(\)/, 'combined Custom apply bypasses the sticky-conflict gate');
+  assert.match(apply, /getDraftText\(\)/, 'combined Custom apply does not capture the visible editor text');
+  assert.match(apply, /confirm\s*\(/, 'combined Custom apply has no explicit root-code confirmation');
+  for (const token of ['callScriptSaveDraft', "callScriptValidate('custom'", "callScriptActivate('custom'"])
+    assert.ok(apply.includes(token), `combined Custom apply omits ${token}`);
+  assert.ok(apply.indexOf('callScriptSaveDraft') < apply.indexOf("callScriptValidate('custom'"), 'Custom apply validates before saving');
+  assert.ok(apply.indexOf("callScriptValidate('custom'") < apply.indexOf("callScriptActivate('custom'"), 'Custom apply activates before validation');
+  assert.match(apply, /draftSaved\s*\?\s*Promise\.resolve\(\)\s*:/, 'Custom apply cannot distinguish saved from unsaved editor text');
+  assert.match(apply, /savedDuringApply\s*=\s*true[\s\S]*adoptSavedBase\s*=\s*savedDuringApply\s*&&\s*\(!response\s*\|\|\s*response\.code\s*!==\s*'conflict'\)[\s\S]*updateDraftBase:\s*adoptSavedBase/, 'post-save failures either retain a stale base or advance it across a conflict');
+  const discard = functionSource('discardCustomChanges');
+  assert.match(discard, /requireCustomMutationAllowed\(\)/, 'Custom discard bypasses the sticky-conflict gate');
+  assert.match(discard, /callScriptDiscardDraft\(/, 'saved Custom script cannot be discarded');
 
   const reloadCallAt = source.lastIndexOf('reloadServerDraft,');
   assert.ok(reloadCallAt >= 0, 'explicit Reload control is absent');
@@ -194,17 +192,26 @@ function reloadAndRetryFailureTests() {
 
 function stateAndMetadataTests() {
   assert.match(source, /state\.check\s*=/, 'update-check response is not stored');
-  assert.match(source, /state\.check[\s\S]*\b(?:relation|remote|available|downgrade)\b/, 'update-check result is not rendered');
-  for (const token of ['raw_url', 'source', 'mode', 'version', 'sha256'])
-    assert.match(source, new RegExp(`\\b${token}\\b`), `Managed metadata omits ${token}`);
+  const managedUpdate = functionSource('runManagedUpdate');
+  assert.match(managedUpdate, /confirm\s*\(/, 'managed update has no single confirmation gate');
+  for (const token of ['callScriptCheck', 'callScriptStage', 'callScriptValidate', 'callScriptActivate'])
+    assert.match(managedUpdate, new RegExp(token), `managed update omits ${token}`);
+  assert.ok(managedUpdate.indexOf('callScriptCheck') < managedUpdate.indexOf('callScriptStage'), 'managed update checks after staging');
+  assert.ok(managedUpdate.indexOf('callScriptStage') < managedUpdate.indexOf('callScriptValidate'), 'managed update validates before staging');
+  assert.ok(managedUpdate.indexOf('callScriptValidate') < managedUpdate.indexOf('callScriptActivate'), 'managed update activates before validation');
+  assert.match(managedUpdate, /callScriptActivate\([^\n]+,\s*true\s*,\s*false\)/, 'managed update can implicitly downgrade');
+  assert.doesNotMatch(source, /当前版本和指纹|远程版本和指纹|候选状态|回滚到上一版本|上一版本以便回滚|指纹为/, 'internal update metadata is exposed to users');
+  assert.doesNotMatch(source, /summaryText|metadataRow/, 'fingerprint metadata renderer remains in the UI');
 
   assert.match(source, /recovery_required/, 'recovery-required state is absent');
   assert.match(source, /recovery_required[\s\S]*disabled|disabled[\s\S]*recovery_required/, 'recovery-required does not disable actions');
   assert.match(source, /retryLoad|刷新脚本状态/, 'recovery/error state has no retry action');
   assert.match(source, /state\.busy[\s\S]*aria-busy/, 'loading/busy state is not announced');
-  assert.match(source, /candidate\.present\s*\?/, 'candidate empty state is absent');
   assert.match(source, /draftMissing\s*\?/, 'draft empty state is absent');
   assert.match(source, /actionError[\s\S]*role':\s*'alert'/, 'error/recovery state is not rendered as an alert');
+  assert.doesNotMatch(source, /script-step|1\. 编辑草稿|2\. 草稿状态|3\. 保存草稿|4\. 验证草稿|5\. 明确确认激活|6\. 丢弃/, 'numbered draft workflow remains exposed in the management UI');
+  for (const label of ["_('保存')", "_('保存并启用')", "_('放弃修改')", "_('载入当前脚本')"])
+    assert.ok(source.includes(label), `simplified Custom action is absent: ${label}`);
 
   assert.match(source, /preserveTypedDraft/, 'mutations have no typed-text preservation policy');
   assert.match(source, /callScriptDiscardDraft[\s\S]*preserveTypedDraft:\s*false/, 'discard does not explicitly opt into replacing editor text');
@@ -213,13 +220,23 @@ function stateAndMetadataTests() {
 }
 
 function confirmationAndAccessibilityTests() {
-  for (const variable of ['callScriptValidate', 'callScriptActivate', 'callScriptRollback', 'callScriptRestore', 'callScriptDiscardDraft']) {
+  for (const variable of ['callScriptValidate', 'callScriptActivate', 'callScriptRestore', 'callScriptDiscardDraft']) {
     const declaration = rpcDeclarations().find((item) => item.variable === variable);
     const calls = [...source.matchAll(new RegExp(`\\b${variable}\\(`, 'g'))].filter((match) => match.index > declaration.end);
     assert.ok(calls.length > 0, `${variable} is never called`);
-    for (const call of calls)
-      assert.match(source.slice(Math.max(0, call.index - 500), call.index), /confirm\s*\(/, `${variable} call lacks an explicit nearby confirmation`);
+    const customCalls = calls.filter((call) => /'custom'/.test(source.slice(call.index, call.index + 80)));
+    for (const call of customCalls)
+      assert.ok(functionSource('runCustomApply').includes(source.slice(call.index, call.index + 40)), `${variable} Custom call is outside the confirmed combined apply flow`);
   }
+  const createDraft = functionSource('createDraftFromActive');
+  assert.match(createDraft, /currentInfo\(\)\.mode !== 'managed'/, 'active-to-draft copy can expose a non-managed active script');
+  assert.match(createDraft, /confirm\s*\(/, 'active-to-draft copy lacks explicit confirmation');
+  assert.match(createDraft, /typedText[\s\S]*尚未保存的内容将被当前托管脚本替换/, 'active-to-draft copy can silently replace unsaved editor text');
+  assert.match(createDraft, /callScriptCreateDraft\(hash\(active\), generation\(\)\)/, 'active-to-draft copy lacks hash/generation concurrency');
+  const rollbackDeclaration = rpcDeclarations().find((item) => item.variable === 'callScriptRollback');
+  const rollbackCalls = [...source.matchAll(/\bcallScriptRollback\(/g)].filter((match) => match.index > rollbackDeclaration.end);
+  assert.equal(rollbackCalls.length, 0, 'managed UI still exposes the previous-version rollback action');
+  assert.match(source, /runManagedUpdate[\s\S]*confirm\s*\(/, 'managed update confirmation is absent');
   assert.match(source, /callScriptValidate\([^\n]+,\s*true\s*\)/, 'validate confirmation boolean is not literal true');
   assert.match(source, /callScriptActivate\([^\n]+,\s*true\s*,/, 'activate confirmation boolean is not literal true');
   assert.match(source, /root(?:-level|\s*级)/i, 'root-code execution warning is absent');
@@ -227,7 +244,7 @@ function confirmationAndAccessibilityTests() {
   const nativeButton = functionSource('nativeButton');
   assert.match(nativeButton, /E\('button'/, 'actions are not native buttons');
   assert.match(nativeButton, /'type':\s*'button'/, 'native action button has implicit submit semantics');
-  assert.match(nativeButton, /'disabled':\s*disabled/, 'native action button ignores disabled state');
+  assert.match(nativeButton, /'disabled':\s*disabledAttr\(disabled\)/, 'native action button does not omit false disabled attributes');
   assert.match(source, /E\('textarea'/, 'Custom editor is not a native textarea');
   assert.match(source, /'aria-live':\s*'polite'/, 'status feedback lacks aria-live');
   assert.match(source, /'aria-live':\s*'assertive'/, 'error feedback lacks assertive aria-live');

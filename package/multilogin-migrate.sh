@@ -2,6 +2,11 @@
 # Shared, POSIX lifecycle implementation.  Package hooks embed this file so
 # preinst never depends on a file that has not been unpacked yet.
 
+if [ "${ML_FS_EMBEDDED:-0}" != 1 ]; then
+	# shellcheck disable=SC1091
+	. "$(dirname "$0")/multilogin-fs.sh" || exit 1
+fi
+
 ML_KNOWN_LOGIN_SHA='6ceef1565b393e692216f8c789d52a5fe533df35f1db243eb90527c61d95b380'
 ML_KNOWN_STATUS_SHA='24ae7e4190701786f39111e7a15210e8d3fa52fd1d25157806e89035bf5a590e'
 ML_KNOWN_LOGOUT_SHA='176e170723d8eef5fcc90cf160c50239c57213ff2c55e6b5a44a677f5b0ab5ca'
@@ -40,7 +45,7 @@ ml_sha256() {
 	fi
 }
 
-ml_mode() { stat -c '%a' "$1" 2>/dev/null || busybox stat -c '%a' "$1" 2>/dev/null; }
+ml_mode() { ml_fs_mode "$1"; }
 
 ml_atomic_from_stdin() {
 	ML_ATOMIC_TARGET=$1
@@ -210,17 +215,58 @@ ml_service_action() {
 	fi
 }
 
+# rpcd reads external handlers only when it starts.  The package data has
+# already replaced our handler by postinst, so refresh rpcd after service
+# restoration.  This is deliberately best-effort: a transient rpcd failure
+# must not turn a successfully unpacked package into another aborted upgrade.
+ml_refresh_rpcd() {
+	ml_live_root || return 0
+	[ -x /etc/init.d/rpcd ] || return 0
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || return 1
+}
+
+# LuCI caches the generated menu tree under /tmp.  Remove only the
+# LuCI-owned index files after a live package upgrade so compatibility aliases
+# and newly installed views are not served from a stale tree.
+ml_refresh_luci() {
+	ml_live_root || return 0
+	for ML_LUCI_CACHE in /tmp/luci-indexcache.*; do
+		if [ ! -f "$ML_LUCI_CACHE" ] || [ -L "$ML_LUCI_CACHE" ]; then
+			continue
+		fi
+		rm -f "$ML_LUCI_CACHE" || return 1
+	done
+}
+
 ml_snapshot_one() {
 	ML_SNAPSHOT_NAME=$1
 	ML_SNAPSHOT_PATH=$(ml_path "/etc/multilogin/$ML_SNAPSHOT_NAME")
 	if [ -e "$ML_SNAPSHOT_PATH" ] || [ -L "$ML_SNAPSHOT_PATH" ]; then
-		[ -f "$ML_SNAPSHOT_PATH" ] && [ ! -L "$ML_SNAPSHOT_PATH" ] || return 1
-		ML_SNAPSHOT_HASH=$(ml_sha256 "$ML_SNAPSHOT_PATH") || return 1
-		ML_SNAPSHOT_MODE=$(ml_mode "$ML_SNAPSHOT_PATH") || return 1
-		ml_atomic_copy "$ML_SNAPSHOT_PATH" "$ML_MIGRATION_DIR/legacy/$ML_SNAPSHOT_NAME" "$ML_SNAPSHOT_MODE" || return 1
-		printf '%s|present|%s|%s\n' "$ML_SNAPSHOT_NAME" "$ML_SNAPSHOT_HASH" "$ML_SNAPSHOT_MODE" >>"$ML_MIGRATION_DIR/legacy.index"
+		if [ ! -f "$ML_SNAPSHOT_PATH" ] || [ -L "$ML_SNAPSHOT_PATH" ]; then
+			ml_die "legacy path is unsafe: $ML_SNAPSHOT_NAME"
+			return 1
+		fi
+		ML_SNAPSHOT_HASH=$(ml_sha256 "$ML_SNAPSHOT_PATH") || {
+			ml_die "cannot hash legacy file: $ML_SNAPSHOT_NAME"
+			return 1
+		}
+		ML_SNAPSHOT_MODE=$(ml_mode "$ML_SNAPSHOT_PATH") || {
+			ml_die "cannot read legacy file mode: $ML_SNAPSHOT_NAME"
+			return 1
+		}
+		ml_atomic_copy "$ML_SNAPSHOT_PATH" "$ML_MIGRATION_DIR/legacy/$ML_SNAPSHOT_NAME" "$ML_SNAPSHOT_MODE" || {
+			ml_die "cannot copy legacy file: $ML_SNAPSHOT_NAME"
+			return 1
+		}
+		printf '%s|present|%s|%s\n' "$ML_SNAPSHOT_NAME" "$ML_SNAPSHOT_HASH" "$ML_SNAPSHOT_MODE" >>"$ML_MIGRATION_DIR/legacy.index" || {
+			ml_die "cannot index legacy file: $ML_SNAPSHOT_NAME"
+			return 1
+		}
 	else
-		printf '%s|absent||\n' "$ML_SNAPSHOT_NAME" >>"$ML_MIGRATION_DIR/legacy.index"
+		printf '%s|absent||\n' "$ML_SNAPSHOT_NAME" >>"$ML_MIGRATION_DIR/legacy.index" || {
+			ml_die "cannot index absent legacy file: $ML_SNAPSHOT_NAME"
+			return 1
+		}
 	fi
 }
 
@@ -372,8 +418,14 @@ ml_restore_service() {
 }
 
 ml_preinst() {
-	ml_init || return 1
-	ml_acquire_lock || return 1
+	ml_init || {
+		ml_die 'preinst initialization failed'
+		return 1
+	}
+	ml_acquire_lock || {
+		ml_die 'preinst migration lock failed'
+		return 1
+	}
 	ML_KIND=fresh
 	ML_SOURCE_VERSION=none
 	if ml_is_upgrade "$@"; then
@@ -382,10 +434,22 @@ ml_preinst() {
 	fi
 	ML_EXISTING=$(ml_current_state)
 	if [ "$ML_EXISTING" = prepared ] || [ "$ML_EXISTING" = unpacked ] || [ "$ML_EXISTING" = classified ] || [ "$ML_EXISTING" = installed ] || [ "$ML_EXISTING" = service_restored ]; then return 0; fi
-	ml_new_generation || return 1
-	ml_check_space || return 1
-	ml_snapshot || return 1
-	ml_set_state prepared
+	ml_new_generation || {
+		ml_die 'preinst generation setup failed'
+		return 1
+	}
+	ml_check_space || {
+		ml_die 'preinst free-space check failed'
+		return 1
+	}
+	ml_snapshot || {
+		ml_die 'preinst snapshot failed'
+		return 1
+	}
+	ml_set_state prepared || {
+		ml_die 'preinst state commit failed'
+		return 1
+	}
 }
 
 ml_postinst() {
@@ -422,9 +486,13 @@ ml_postinst() {
 	fi
 	if [ "$ML_EXISTING" = service_restored ]; then
 		ml_set_state complete || return 1
+		ML_EXISTING=complete
+	fi
+	if [ "$ML_EXISTING" = complete ]; then
+		ml_refresh_rpcd || :
+		ml_refresh_luci || :
 		return 0
 	fi
-	[ "$ML_EXISTING" = complete ] && return 0
 	return 1
 }
 
@@ -529,6 +597,32 @@ sha256() {
  else
   return 1
  fi
+}
+mode() {
+ if command -v stat >/dev/null 2>&1; then
+  value=$(stat -c %a "$1" 2>/dev/null) && [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+ fi
+ if command -v busybox >/dev/null 2>&1; then
+  value=$(busybox stat -c %a "$1" 2>/dev/null) && [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+ fi
+ # Fixed absolute paths cannot be options; this build may omit stat.
+ # shellcheck disable=SC2012
+ LC_ALL=C ls -ldn "$1" 2>/dev/null | awk '
+  NR == 1 {
+   m=substr($1,2,9); if (length(m)!=9) exit 1; v=0
+   for (g=0;g<3;g++) {
+    f=g==0?64:(g==1?8:1); r=substr(m,g*3+1,1); w=substr(m,g*3+2,1); x=substr(m,g*3+3,1)
+    if (r=="r") v+=4*f; else if (r!="-") exit 1
+    if (w=="w") v+=2*f; else if (w!="-") exit 1
+    if (x=="x"||x=="s"||x=="t") v+=f; else if (x!="-"&&x!="S"&&x!="T") exit 1
+    if (g==0&&(x=="s"||x=="S")) v+=2048
+    if (g==1&&(x=="s"||x=="S")) v+=1024
+    if (g==2&&(x=="t"||x=="T")) v+=512
+   }
+   printf "%o\n",v; found=1
+  }
+  END { if (!found) exit 1 }
+ '
 }
 release_lock() {
  [ "$lock_owned" = 1 ] || return 0
@@ -672,8 +766,8 @@ case $generation:$config_hash:$active_hash:$config_mode:$active_mode in *[!A-Za-
 [ -z "$saved_state" ] || { case $saved_state in /etc/multilogin/.migration-v3/downgrade-state/script-state.*) [ -d "${root%/}$saved_state" ];; *) exit 1;; esac; }
 [ "$(sha256 "$state/multilogin")" = "$config_hash" ] || exit 1
 [ "$(sha256 "$state/cqu-portal.sh")" = "$active_hash" ] || exit 1
-[ "$(stat -c %a "$state/multilogin")" = "$config_mode" ] || exit 1
-[ "$(stat -c %a "$state/cqu-portal.sh")" = "$active_mode" ] || exit 1
+[ "$(mode "$state/multilogin")" = "$config_mode" ] || exit 1
+[ "$(mode "$state/cqu-portal.sh")" = "$active_mode" ] || exit 1
 [ -f "$state/service.before" ] && [ ! -L "$state/service.before" ] || exit 1
 enabled=$(sed -n 's/^enabled=//p' "$state/service.before" | sed -n '1p'); running=$(sed -n 's/^running=//p' "$state/service.before" | sed -n '1p')
 case $enabled:$running in 0:0|0:1|1:0|1:1) ;; *) exit 1;; esac
