@@ -1340,7 +1340,9 @@ ml_rpc_create_draft() {
 	active_hash=$(ml_summary_value "$ML_ACTIVE_SUMMARY" sha256) || active_hash=''
 	active_mode=$(ml_summary_value "$ML_ACTIVE_SUMMARY" mode) || active_mode=none
 	[ "$active_mode" = managed ] || ml_fail_empty invalid_state 'only a managed active script can seed a draft'
-	[ -n "$active_hash" ] && [ "$active_hash" = "$ML_REQ_EXPECTED_SHA256" ] || ml_fail_conflict "$active_hash"
+	if [ -z "$active_hash" ] || [ "$active_hash" != "$ML_REQ_EXPECTED_SHA256" ]; then
+		ml_fail_conflict "$active_hash"
+	fi
 	ml_secure_file "$ML_ACTIVE" 755 || ml_fail_empty invalid_state 'active script is unavailable'
 	ml_static_accept "$ML_ACTIVE" 755 || ml_fail_empty source_rejected 'active script failed static validation'
 	active_size=$(wc -c <"$ML_ACTIVE" 2>/dev/null) || ml_fail_empty internal_error 'active size unavailable'
